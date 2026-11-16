@@ -1,0 +1,119 @@
+name: Basic Gate calibration
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Publish the basic checks, or probe an existing publication without republishing.
+        required: true
+        type: choice
+        options:
+          - publish-and-probe
+          - probe-only
+        default: publish-and-probe
+      manifest:
+        description: Frozen waiting, partial, failure and success PR identities as JSON.
+        required: false
+        type: string
+        default: ''
+      source_run_id:
+        description: Earlier calibration run containing basic-publication, for probe-only.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sr-pr-gate-lab-calibration
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.ref == 'refs/heads/main' && inputs.phase == 'publish-and-probe'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Evaluate the fixed qualification fixtures
+        env:
+          LAB_MANIFEST: ${{ inputs.manifest }}
+        run: python3 lab.py qualify --output out/qualification.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: basic-qualification
+          path: out/qualification.json
+          retention-days: 14
+          if-no-files-found: error
+
+  publish:
+    needs: qualify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: basic-qualification
+          path: out/input
+      - name: Publish the exact fixture results
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 lab.py publish --input out/input/qualification.json --output out/publication.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: basic-publication
+          path: out/publication.json
+          retention-days: 14
+          if-no-files-found: error
+
+  probe:
+    needs: publish
+    if: >-
+      always() && github.ref == 'refs/heads/main'
+      && (needs.publish.result == 'success' || inputs.phase == 'probe-only')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      checks: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: basic-publication
+          path: out/input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.phase == 'probe-only' && inputs.source_run_id || github.run_id }}
+      - name: Attempt ordinary merges, negative controls first
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 lab.py probe --input out/input/publication.json --output out/probe.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: basic-probe
+          path: out/probe.json
+          retention-days: 14
+          if-no-files-found: error
