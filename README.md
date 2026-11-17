@@ -86,3 +86,11 @@ All reports retain real producers and the original source chain. Cross-run artif
 | `advance` | same-run terminal probe or last-case baseline | `native-advance/advance.json` |
 
 Reports expose `protocol_valid`, `gate_success`, `eligible`, `advance` and `batch_complete` via `GITHUB_OUTPUT`. An invalid protocol exits 1, as do deliberate negative `gate` verdicts and the actual failed `qualify` fixture. Reports and failure artifacts are retained with `always()` upload steps. Local tests use real fixed subprocesses and controlled HTTP responses; they prove guards and state transitions, not GitHub's actual merge decision. No platform recovery is claimed from local tests.
+
+# Native Gate attribution controls (throwaway lab experiment)
+
+The `lab/native-controls` experiment adds two fresh, independently protected positive controls. `clean` starts directly with complete qualification and has no cancelled seed suite. `cancelled-no-gate` first cancels a seed run which must contain no `PR Gate`, including skipped checks. Both then use the same native Gate and ordinary merge probe. The previous native PR #20 is retained as a historical old-Gate comparison; these are matched code controls on separate marked heads, not a same-head causal experiment.
+
+`native_controls.py` uses only fixed lab endpoints and the existing dispatch schema. It creates no API CheckRuns, mutates no suites or existing rules, and advances through at most seven workflow runs without waiting or retries. A successful probe requires current qualification, real job-to-CheckRun ownership, required/all/latest checks, and the actual merged PR, `[base, head]` parents and target ref. A Gate-specific HTTP 405 records `CONTROL_STILL_BLOCKED`; a green controller or `BATCH_COMPLETE` is not recovery. Source invalidation, extra runs/suites, any old same-name Gate, and metadata/permission errors stop rather than authorize a merge.
+
+These two cases only diagnose positive-path attribution. Even if they merge, pending, partial, failure and stale-success controls must be tested under the selected model before any production recovery proposal. Null rollup remains unknown; no production App, rule or publisher migration is implemented.
