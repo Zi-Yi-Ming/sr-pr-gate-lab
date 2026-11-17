@@ -25,3 +25,35 @@ Run local tests with:
 ```text
 python -m unittest discover -s tests -v
 ```
+
+## A/B multi-suite experiment
+
+The basic calibration passed on run [43895533473](https://github.com/Zi-Yi-Ming/sr-pr-gate-lab/actions/runs/43895533473): waiting and partial authorization returned explicit required-Gate HTTP405 refusals; the failed fixture returned a failing-Gate refusal; the full-success PR merged normally. Its raw artifacts remain the basic evidence.
+
+The A/B controller lives on `lab/ab-controller`. Default main retains the basic workflow. Each new A/B case has its own independently protected target branch with the same required check/App/admin contract and its own frozen head. No basic PR is changed.
+
+The fixed case order is A waiting/partial/failure/success, then B waiting/partial/failure/success. A seed run on the case head dispatches qualification and cancels itself. A separate run on the same head executes qualification and the native `CI Execution` aggregate. Its relay starts the driver on the immutable controller revision. One concurrency slot makes these finite stages sequential, without waiting loops or timers.
+
+The driver checks actual run/suite provenance before publishing. Negative cases deliberately include an explicitly synthetic stale-success fixture; it is not qualification evidence. The current Gate must still remain pending or failed, and actual ordinary merge calls must be refused. Positive cases must first reproduce the required-green/cancelled-suite/merge-refused topology; absence of that topology is `NOT_REPRODUCED`.
+
+Route A PATCHes only the exact current Gate. Route B POSTs one replacement and retains old checks. Publisher and recovery jobs can write checks but cannot merge; baseline and final probes can merge but cannot rewrite checks or administer the repository. Native and foreign checks are never neutralized.
+
+An unsafe negative merge, permission error or inconclusive result stops the finite batch. A well-defined terminal result can advance exactly one position. `NOT_REPRODUCED`, `NOT_RECOVERED` and inconsistent merge/readback evidence are never presented as a successful recovery. There are no repeated dispatch retries, polling, scheduled monitors or comments.
+
+## A merge-decision supplement
+
+The first three A negative fixtures passed actual Gate-specific HTTP405 probes. The strict A success baseline stopped before a merge attempt because `Commit.statusCheckRollup` was null. Direct account and PR-context GraphQL reads also returned null; this does not establish a permission problem or a platform root cause. A third, empty queued suite belongs to Cursor and is left untouched.
+
+`lab/ab-supplement-a` preserves the original controller, case heads and artifacts. Its three additional jobs perform a bounded merge-decision experiment against only the original A success fixture. The original publication from run `44048669391` is pinned by its canonical JSON SHA256; original qualification, source run/attempt, check identities, current requiredness and frozen head/base are revalidated. The source producer is never rewritten to impersonate the supplemental driver.
+
+A baseline ordinary merge must explicitly return HTTP405 naming `PR Gate`, with the PR still unmerged, before the recovery job can PATCH the exact original successful Gate. Other required contexts, conflicts, permission errors, missing evidence, changed checks and changed qualification stop the supplement. There is no Gate POST, suite update, admin bypass, rerun, B dispatch or comment. Check-writing and merge permissions remain separate.
+
+The final ordinary merge response, PR readback, merge parents and target ref are retained. `MERGED_PROBE_ONLY` and `STILL_BLOCKED_PROBE_ONLY` describe only the measured merge decision; `strict_recovery_verified` is always false. If the baseline already merges, the result is `BASELINE_MERGED_NO_RECOVERY_NEEDED` and no PATCH occurs. None of these outcomes substitutes for the original strict topology or production acceptance.
+
+## Versioned B continuation
+
+The A supplement completed on run [44053499983](https://github.com/Zi-Yi-Ming/sr-pr-gate-lab/actions/runs/44053499983). Its exact PATCH returned HTTP200, but ordinary merge returned exact PR Gate HTTP405 both before and after. The Gate remained in the cancelled seed suite; the PR remained unmerged and other checks were preserved. This is `STILL_BLOCKED_PROBE_ONLY`, not strict recovery evidence.
+
+`lab/ab-b2-controller` runs only the four B cases, starting at index4, on new `lab/ab-b2-*` heads and independent `lab-target/b2-*` protected targets. Earlier A/B refs, PRs and evidence remain frozen. The first three cases retain the pending/partial/real-failure negative controls, including synthetic stale-success checks. The success case explicitly measures only merge behavior with complete qualification, a required successful Gate in a cancelled seed suite, and an exact Gate-specific HTTP405 baseline before the one replacement POST.
+
+Current native run/attempt, qualification suite and jobs are checked again before the replacement and final merge. Only the cancelled seed suite's aggregate may change after mutation; this does not relax seed-run cancellation provenance or current qualification. The actual replacement ID and owning suite are recorded; no successful association is assumed. All/latest/required checks and preservation of the original Gate and other checks remain mandatory. Positive outcomes are always limited merge-decision outcomes, even if rollup becomes readable. They cannot be upgraded to `RECOVERED`. No extra permissions, CI polling, retries or comments are added.
