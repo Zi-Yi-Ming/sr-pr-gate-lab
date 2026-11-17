@@ -51,6 +51,7 @@ class FakeAPI:
     def __init__(self, index=0):
         self.case = copy.deepcopy(CASES[index]); self.calls = []; self.merged = False
         self.required = True; self.post_merge_required = None; self.merge_result = None; self.latest_missing = False
+        self.null_rollup = False; self.post_merge_null_rollup = False
         self.mutate_foreign = False; self.bad_readback = False
         self.base_sha = BASE; self.advance_base_after_post = False
         self.merge_sha = "9" * 40; self.merge_parents = [BASE, self.case["head"]]
@@ -89,10 +90,11 @@ class FakeAPI:
             node = data["variables"]["node"]
             authoritative = self.checks[int(node.split("_")[1])]
             rollup = "SUCCESS" if authoritative["check_suite"]["id"] == 503 else "FAILURE"
+            rollup = None if self.null_rollup or (self.merged and self.post_merge_null_rollup) else {"state": rollup}
             required = self.post_merge_required if self.merged and self.post_merge_required is not None else self.required
             return 200, {"data": {"check": {"id": node, "isRequired": required},
                                   "repository": {"pullRequest": {"headRefOid": self.case["head"]},
-                                  "object": {"oid": self.case["head"], "statusCheckRollup": {"state": rollup}}}}}
+                                  "object": {"oid": self.case["head"], "statusCheckRollup": rollup}}}}
         if path == P + "/actions/workflows/calibration.yml/dispatches" and method == "POST": return 204, {}
         if path == P + "/actions/runs/100/cancel" and method == "POST": return 202, {"message": "accepted"}
         if path == P + "/pulls/" + str(self.case["pr"]) and method == "GET": return 200, self.pr()
@@ -288,13 +290,26 @@ class PublicationTests(unittest.TestCase):
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_null_positive_rollup_stops_before_merge_with_evidence_reason(self):
+        api, publication = published(3); api.null_rollup = True; api.calls.clear()
+        result = run("baseline", 3, api, publication)
+        self.assertEqual(result["outcome"], "INCONCLUSIVE")
+        self.assertFalse(result["eligible"]); self.assertFalse(result["advance"])
+        self.assertFalse(result["all_passed"])
+        self.assertIn("statusCheckRollup", result["error"])
+        self.assertIsNone(result["evidence"]["before"]["graphql"]["body"]["data"]["repository"]["object"]["statusCheckRollup"])
+        self.assertFalse(any(c[0] == "PUT" for c in api.calls))
+
     def test_negative_baseline_refusal_is_eligible_but_generic_or_permission_is_not(self):
         for index in (0, 1, 2, 4, 5, 6):
             api, publication = published(index)
             baseline = run("baseline", index, api, publication)
             self.assertTrue(baseline["eligible"], baseline)
             self.assertFalse(baseline["advance"])
-        for code, message in ((403, "PR Gate"), (409, "head changed"), (405, "Nope")):
+        for code, message in ((403, "PR Gate"), (409, "head changed"), (405, "Nope"),
+                (405, 'Required status check "Security" is expected.'),
+                (405, 'Required status check "PR Gateway" is expected.'),
+                (405, 'Required status check "PR Gate extra" is expected.')):
             api, publication = published(); api.merge_result = code, {"message": message}
             result = run("baseline", api=api, document=publication)
             self.assertFalse(result["eligible"]); self.assertFalse(result["advance"])
@@ -393,6 +408,14 @@ class ProbeAndAdvanceTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "RECOVERED", result)
         self.assertTrue(result["evidence"]["before"]["graphql"]["body"]["data"]["check"]["isRequired"])
         self.assertFalse(result["evidence"]["after"]["graphql"]["body"]["data"]["check"]["isRequired"])
+        self.assertTrue(run("advance", 7, api, result)["batch_complete"])
+
+    def test_null_postmerge_rollup_preserves_merge_evidence_without_claiming_recovery(self):
+        api, recovery = self.recovered(7); api.post_merge_null_rollup = True
+        result = run("probe", 7, api, recovery)
+        self.assertEqual(result["outcome"], "MERGED_INCONSISTENT_READBACK", result.get("error"))
+        self.assertTrue(result["evidence"]["merge"]["body"]["merged"])
+        self.assertIn("statusCheckRollup", result["evidence"]["readback_mismatch"])
         self.assertTrue(run("advance", 7, api, result)["batch_complete"])
 
     def test_not_required_before_merge_blocks_probe(self):

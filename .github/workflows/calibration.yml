@@ -258,3 +258,110 @@ jobs:
         path: out/advance.json
         retention-days: 14
         if-no-files-found: error
+  supplement_baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/source
+        github-token: ${{ github.token }}
+        run-id: '44048669391'
+    - id: proof
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 supplement_a.py baseline --source out/source/publication.json --output out/supplement-baseline.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: supplement-baseline
+        path: out/supplement-baseline.json
+        retention-days: 14
+        if-no-files-found: error
+    if: fromJSON(inputs.manifest).stage == 'supplement' && inputs.phase == 'probe-only' && inputs.source_run_id
+      == '44048669391'
+    outputs:
+      eligible: ${{ steps.proof.outputs.eligible }}
+  supplement_recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/source
+        github-token: ${{ github.token }}
+        run-id: '44048669391'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: supplement-baseline
+        path: out/input
+    - id: proof
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 supplement_a.py recover --source out/source/publication.json --input out/input/supplement-baseline.json
+        --output out/supplement-recover.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: supplement-recover
+        path: out/supplement-recover.json
+        retention-days: 14
+        if-no-files-found: error
+    needs: supplement_baseline
+    if: needs.supplement_baseline.outputs.eligible == 'true'
+  supplement_probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/source
+        github-token: ${{ github.token }}
+        run-id: '44048669391'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: supplement-recover
+        path: out/input
+    - id: proof
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 supplement_a.py probe --source out/source/publication.json --input out/input/supplement-recover.json
+        --output out/supplement-probe.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: supplement-probe
+        path: out/supplement-probe.json
+        retention-days: 14
+        if-no-files-found: error
+    needs: supplement_recover

@@ -448,18 +448,28 @@ def snapshot(client, envelope, publication, current, target, *, required=True, s
 def target_topology(snapshot, envelope, publication):
     current = publication["initial_check"]
     data = graphql_data(snapshot, envelope, current, False)
+    state = rollup_state(data)
     return (data["check"].get("isRequired") is True and current["status"] == "completed" and current["conclusion"] == "success"
             and current["check_suite"]["id"] == publication["native"]["seed_run"]["check_suite_id"]
             and snapshot["gate_suite"].get("status") == "completed" and snapshot["gate_suite"].get("conclusion") == "cancelled"
             and snapshot["seed_suite"].get("status") == "completed" and snapshot["seed_suite"].get("conclusion") == "cancelled"
             and snapshot["qualification_suite"].get("status") == "completed" and snapshot["qualification_suite"].get("conclusion") == "success"
-            and data["repository"]["object"].get("statusCheckRollup", {}).get("state") == "FAILURE")
+            and state == "FAILURE")
+
+
+def rollup_state(data):
+    rollup = data["repository"]["object"].get("statusCheckRollup")
+    require(type(rollup) is dict and type(rollup.get("state")) is str and bool(rollup["state"]),
+            "head statusCheckRollup is unavailable; cannot classify recovery")
+    return rollup["state"]
 
 
 def gate_refusal(evidence):
     body = evidence.get("body")
     message = body.get("message", "") if type(body) is dict else ""
-    return evidence.get("status") == 405 and type(message) is str and ("pr gate" in message.lower() or "required status check" in message.lower())
+    return (evidence.get("status") == 405 and type(message) is str
+            and re.fullmatch(r'Required status check (?:"PR Gate"|PR Gate) is (?:expected|failing|in progress)\.?',
+                             message, flags=re.IGNORECASE) is not None)
 
 
 def merged_response(evidence):
@@ -624,7 +634,7 @@ def positive_readback(snapshot, envelope, current, merge):
     validate_merge_commit(snapshot, envelope, merge)
     data = graphql_data(snapshot, envelope, current, required=False)
     validate_suite(snapshot["gate_suite"], current["check_suite"]["id"], selected(envelope), "success")
-    require(data["repository"]["object"].get("statusCheckRollup", {}).get("state") == "SUCCESS", "postmerge head rollup is not SUCCESS")
+    require(rollup_state(data) == "SUCCESS", "postmerge head rollup is not SUCCESS")
 
 
 def probe(report, envelope, client, document, env):

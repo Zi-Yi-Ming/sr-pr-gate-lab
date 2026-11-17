@@ -39,3 +39,13 @@ The driver checks actual run/suite provenance before publishing. Negative cases 
 Route A PATCHes only the exact current Gate. Route B POSTs one replacement and retains old checks. Publisher and recovery jobs can write checks but cannot merge; baseline and final probes can merge but cannot rewrite checks or administer the repository. Native and foreign checks are never neutralized.
 
 An unsafe negative merge, permission error or inconclusive result stops the finite batch. A well-defined terminal result can advance exactly one position. `NOT_REPRODUCED`, `NOT_RECOVERED` and inconsistent merge/readback evidence are never presented as a successful recovery. There are no repeated dispatch retries, polling, scheduled monitors or comments.
+
+## A merge-decision supplement
+
+The first three A negative fixtures passed actual Gate-specific HTTP405 probes. The strict A success baseline stopped before a merge attempt because `Commit.statusCheckRollup` was null. Direct account and PR-context GraphQL reads also returned null; this does not establish a permission problem or a platform root cause. A third, empty queued suite belongs to Cursor and is left untouched.
+
+`lab/ab-supplement-a` preserves the original controller, case heads and artifacts. Its three additional jobs perform a bounded merge-decision experiment against only the original A success fixture. The original publication from run `44048669391` is pinned by its canonical JSON SHA256; original qualification, source run/attempt, check identities, current requiredness and frozen head/base are revalidated. The source producer is never rewritten to impersonate the supplemental driver.
+
+A baseline ordinary merge must explicitly return HTTP405 naming `PR Gate`, with the PR still unmerged, before the recovery job can PATCH the exact original successful Gate. Other required contexts, conflicts, permission errors, missing evidence, changed checks and changed qualification stop the supplement. There is no Gate POST, suite update, admin bypass, rerun, B dispatch or comment. Check-writing and merge permissions remain separate.
+
+The final ordinary merge response, PR readback, merge parents and target ref are retained. `MERGED_PROBE_ONLY` and `STILL_BLOCKED_PROBE_ONLY` describe only the measured merge decision; `strict_recovery_verified` is always false. If the baseline already merges, the result is `BASELINE_MERGED_NO_RECOVERY_NEEDED` and no PATCH occurs. None of these outcomes substitutes for the original strict topology or production acceptance.
