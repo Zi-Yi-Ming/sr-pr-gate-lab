@@ -14,6 +14,7 @@ import lab
 
 BASE = "525bc8117c9176b158d206b324c904e18aab8534"
 CONTROLLER_REF = "lab/ab-controller"
+B2_CONTROLLER_REF = "lab/ab-b2-controller"
 WORKFLOW = ".github/workflows/calibration.yml"
 DISPATCH = lab.PREFIX + "/actions/workflows/calibration.yml/dispatches"
 FIXTURES = ("waiting", "partial", "failure", "success")
@@ -33,9 +34,11 @@ def validate_envelope(value):
     keys = {"schema_version", "controller_ref", "controller_sha", "cases", "index", "stage"}
     require(type(value) is dict and keys <= set(value) <= keys | {"seed_run_id", "qualification_run_id"}, "invalid A/B envelope keys")
     require(type(value["schema_version"]) is int and value["schema_version"] == 1, "invalid envelope schema")
-    require(value["controller_ref"] == CONTROLLER_REF and type(value["controller_sha"]) is str
+    require(value["controller_ref"] in (CONTROLLER_REF, B2_CONTROLLER_REF) and type(value["controller_sha"]) is str
             and lab.SHA_RE.fullmatch(value["controller_sha"]), "invalid controller identity")
     require(type(value["index"]) is int and 0 <= value["index"] < 8, "index must be within the finite eight-case batch")
+    if value["controller_ref"] == B2_CONTROLLER_REF:
+        require(value["index"] >= 4, "B2 continuation only executes its four B cases")
     require(value["stage"] in ("seed", "qualification", "driver"), "invalid envelope stage")
     require(type(value["cases"]) is list and len(value["cases"]) == 8, "exactly eight ordered cases required")
     prs, heads = set(), set()
@@ -44,8 +47,9 @@ def validate_envelope(value):
         require(type(case) is dict and set(case) == {"case_id", "route", "fixture", "pr", "head", "base", "base_ref", "head_ref"}, "invalid case keys")
         require(case["case_id"] == route + "_" + fixture and case["route"] == route and case["fixture"] == fixture, "case order/route/fixture mismatch")
         require(lab.positive(case["pr"]) and type(case["head"]) is str and lab.SHA_RE.fullmatch(case["head"]), "invalid case PR/head")
-        require(case["base"] == BASE and case["base_ref"] == "lab-target/" + route.lower() + "-" + fixture
-                and case["head_ref"] == "lab/ab-" + route.lower() + "-" + fixture, "case target/head refs or base changed")
+        suffix = ("b2" if value["controller_ref"] == B2_CONTROLLER_REF and route == "B" else route.lower()) + "-" + fixture
+        require(case["base"] == BASE and case["base_ref"] == "lab-target/" + suffix
+                and case["head_ref"] == "lab/ab-" + suffix, "case target/head refs or base changed")
         prs.add(case["pr"]); heads.add(case["head"].lower())
     require(len(prs) == 8 and len(heads) == 8 and value["controller_sha"].lower() not in heads,
             "case PRs/heads must be unique and separate from controller")
@@ -352,7 +356,7 @@ def validate_suite(suite, suite_id, case, conclusion=None):
         require(suite.get("status") == "completed" and suite.get("conclusion") == conclusion, "suite is not in the expected terminal state")
 
 
-def validate_native(native, envelope):
+def validate_native(native, envelope, *, allow_seed_suite_change=False):
     case = selected(envelope)
     for key, id_key, expected in (("seed_run", "seed_run_id", "cancelled"),
             ("qualification_run", "qualification_run_id", "failure" if case["fixture"] == "failure" else "success")):
@@ -364,7 +368,8 @@ def validate_native(native, envelope):
                 and run.get("head_repository", {}).get("full_name") == lab.REPOSITORY, "native workflow run provenance mismatch")
         require(run.get("status") == "completed" and run.get("conclusion") == expected, "native workflow is not completed with expected conclusion")
         require(lab.positive(run.get("check_suite_id")), "native suite ID missing")
-        validate_suite(native["seed_suite" if key == "seed_run" else "qualification_suite"], run["check_suite_id"], case, expected)
+        suite_expected = None if key == "seed_run" and allow_seed_suite_change else expected
+        validate_suite(native["seed_suite" if key == "seed_run" else "qualification_suite"], run["check_suite_id"], case, suite_expected)
     require(native["seed_run"]["check_suite_id"] != native["qualification_run"]["check_suite_id"], "seed/qualification suites must differ")
     jobs = native["jobs"]
     require(type(jobs) is list and all(type(j) is dict for j in jobs), "invalid native jobs")
@@ -383,14 +388,14 @@ def validate_native(native, envelope):
             == {int(envelope["seed_run_id"]), int(envelope["qualification_run_id"])}, "duplicate or missing head-bound experiment runs")
 
 
-def fetch_native(client, envelope, native):
+def fetch_native(client, envelope, native, *, allow_seed_suite_change=False):
     for key, id_key in (("seed_run", "seed_run_id"), ("qualification_run", "qualification_run_id")):
         native[key] = read(client, lab.PREFIX + "/actions/runs/" + envelope[id_key])
     for key, run_key in (("seed_suite", "seed_run"), ("qualification_suite", "qualification_run")):
         native[key] = read(client, lab.PREFIX + "/check-suites/" + str(native[run_key].get("check_suite_id")))
     native["jobs"] = bounded(read(client, lab.PREFIX + "/actions/runs/" + envelope["qualification_run_id"] + "/jobs?per_page=100"), "jobs")
     native["workflow_runs"] = bounded(read(client, workflow_runs_path(envelope)), "workflow_runs")
-    validate_native(native, envelope)
+    validate_native(native, envelope, allow_seed_suite_change=allow_seed_suite_change)
 
 
 def validate_publication(document, envelope, env=None):
@@ -464,6 +469,31 @@ def rollup_state(data):
     return rollup["state"]
 
 
+def merge_only_positive(envelope):
+    return envelope["controller_ref"] == B2_CONTROLLER_REF and envelope["index"] == 7
+
+
+def validate_merge_only_structure(snapshot, envelope, publication):
+    require(merge_only_positive(envelope), "merge-only positive evidence requires the fixed B2 success case")
+    current = publication["initial_check"]; case = selected(envelope)
+    graphql_data(snapshot, envelope, current, required=True)
+    require(publication["qualification"]["gate_status"] == "success"
+            and not publication["qualification"]["deferred"]
+            and all(c["status"] == "passed" for c in publication["qualification"]["contracts"]),
+            "merge-only positive requires complete current successful qualification")
+    require(current["check_suite"]["id"] == publication["native"]["seed_run"]["check_suite_id"],
+            "original Gate does not belong to cancelled seed suite")
+    validate_suite(snapshot["gate_suite"], current["check_suite"]["id"], case, "cancelled")
+    validate_suite(snapshot["seed_suite"], publication["native"]["seed_suite"]["id"], case, "cancelled")
+    validate_suite(snapshot["qualification_suite"], publication["native"]["qualification_suite"]["id"], case, "success")
+
+
+def merge_only_scope(evidence):
+    require(evidence.get("evidence_scope") == "MERGE_DECISION_ONLY"
+            and evidence.get("strict_recovery_verified") is False,
+            "limited merge evidence cannot claim strict recovery")
+
+
 def gate_refusal(evidence):
     body = evidence.get("body")
     message = body.get("message", "") if type(body) is dict else ""
@@ -491,11 +521,17 @@ def validate_baseline(document, envelope, env=None, eligible=False):
     validate_check(before["exact_check"], envelope, receipt=publication["initial_check"])
     unchanged(publication["after_checks"], before["all_checks"])
     if eligible:
-        require(document["outcome"] == "ELIGIBLE" and document["eligible"] is True and not document["advance"], "baseline does not authorize recovery")
+        limited = merge_only_positive(envelope)
+        require(document["outcome"] == ("ELIGIBLE_MERGE_PROBE_ONLY" if limited else "ELIGIBLE")
+                and document["eligible"] is True and not document["advance"], "baseline does not authorize recovery")
         require(gate_refusal(document["evidence"]["merge"]), "eligible baseline lacks actual required-Gate HTTP 405")
         negative_safe(document["evidence"]["after"], selected(envelope))
         graphql_data(before, envelope, publication["initial_check"])
-        if selected(envelope)["fixture"] == "success": require(target_topology(before, envelope, publication), "target cancelled-seed topology was not reproduced")
+        if limited:
+            merge_only_scope(document["evidence"])
+            validate_merge_only_structure(before, envelope, publication)
+        elif selected(envelope)["fixture"] == "success":
+            require(target_topology(before, envelope, publication), "target cancelled-seed topology was not reproduced")
     return publication
 
 
@@ -576,6 +612,9 @@ def baseline(report, envelope, client, document, env):
     unchanged(publication["after_checks"], before["all_checks"])
     if case["fixture"] != "success":
         validate_check(next((c for c in before["all_checks"] if c.get("id") == publication["stale_check"]["id"]), None), envelope, True, publication["stale_check"])
+    elif merge_only_positive(envelope):
+        report["evidence"].update(evidence_scope="MERGE_DECISION_ONLY", strict_recovery_verified=False)
+        validate_merge_only_structure(before, envelope, publication)
     else:
         reproduced = target_topology(before, envelope, publication)
         report["evidence"]["topology_reproduced"] = reproduced
@@ -593,16 +632,19 @@ def baseline(report, envelope, client, document, env):
         record_merge_commit(client, envelope, evidence, after)
         validate_merge_commit(after, envelope, evidence)
         validate_pr(after["pr"], case, merged=True)
-        report.update(outcome="NOT_REPRODUCED", all_passed=True, advance=True)
+        report.update(outcome="BASELINE_MERGED_NO_RECOVERY_NEEDED" if merge_only_positive(envelope) else "NOT_REPRODUCED", all_passed=True, advance=True)
         return
     negative_safe(after, case)
     require(gate_refusal(evidence), "ordinary merge refusal is not attributable to required PR Gate (HTTP 405)")
-    report.update(outcome="ELIGIBLE", all_passed=True, eligible=True)
+    report.update(outcome="ELIGIBLE_MERGE_PROBE_ONLY" if merge_only_positive(envelope) else "ELIGIBLE", all_passed=True, eligible=True)
 
 
 def recover(report, envelope, client, document, env):
     publication = validate_baseline(document, envelope, env, eligible=True)
     report.update(baseline=copy.deepcopy(document), authoritative_check=None, before_checks=[], after_checks=[])
+    if envelope["controller_ref"] == B2_CONTROLLER_REF:
+        report["evidence"]["native_before_mutation"] = {}
+        fetch_native(client, envelope, report["evidence"]["native_before_mutation"])
     before = report["evidence"]["before"] = {}
     old = publication["initial_check"]
     snapshot(client, envelope, publication, old, before)
@@ -641,6 +683,11 @@ def probe(report, envelope, client, document, env):
     publication = validate_recovery(document, envelope, env)
     report["recovery"] = copy.deepcopy(document)
     case, current = selected(envelope), document["authoritative_check"]
+    if envelope["controller_ref"] == B2_CONTROLLER_REF:
+        report["evidence"]["native_before_merge"] = {}
+        fetch_native(client, envelope, report["evidence"]["native_before_merge"], allow_seed_suite_change=True)
+    if merge_only_positive(envelope):
+        report["evidence"].update(evidence_scope="MERGE_DECISION_ONLY", strict_recovery_verified=False)
     before = report["evidence"]["before"] = {}
     snapshot(client, envelope, publication, current, before)
     unchanged(document["after_checks"], before["all_checks"])
@@ -653,6 +700,11 @@ def probe(report, envelope, client, document, env):
     unchanged(before["all_checks"], after["all_checks"])
     if case["fixture"] == "success" and merged_response(evidence):
         record_merge_commit(client, envelope, evidence, after)
+        if merge_only_positive(envelope):
+            validate_pr(after["pr"], case, merged=True)
+            validate_merge_commit(after, envelope, evidence)
+            report.update(outcome="MERGED_PROBE_ONLY", all_passed=True, advance=True)
+            return
         try:
             positive_readback(after, envelope, current, evidence)
             outcome = "RECOVERED"
@@ -664,13 +716,23 @@ def probe(report, envelope, client, document, env):
         return
     negative_safe(after, case)
     require(gate_refusal(evidence), "ordinary merge refusal is not attributable to required PR Gate (HTTP 405)")
-    report.update(outcome="NOT_RECOVERED" if case["fixture"] == "success" else "PASS", all_passed=True, advance=True)
+    outcome = "STILL_BLOCKED_PROBE_ONLY" if merge_only_positive(envelope) else "NOT_RECOVERED" if case["fixture"] == "success" else "PASS"
+    report.update(outcome=outcome, all_passed=True, advance=True)
 
 
 def validate_advance(document, envelope, env):
     case = selected(envelope)
     if document.get("kind") == "ab-baseline":
         publication = validate_baseline(document, envelope, env)
+        if merge_only_positive(envelope):
+            require(document["outcome"] == "BASELINE_MERGED_NO_RECOVERY_NEEDED"
+                    and document["advance"] is True and not document["eligible"], "B2 baseline cannot advance")
+            merge_only_scope(document["evidence"])
+            validate_merge_only_structure(document["evidence"]["before"], envelope, publication)
+            require(merged_response(document["evidence"]["merge"]), "limited baseline lacks actual merge")
+            validate_pr(document["evidence"]["after"]["pr"], case, merged=True)
+            validate_merge_commit(document["evidence"]["after"], envelope, document["evidence"]["merge"])
+            return
         require(case["fixture"] == "success" and document["outcome"] == "NOT_REPRODUCED"
                 and document["advance"] is True and not document["eligible"], "baseline cannot advance")
         before = document["evidence"]["before"]
@@ -694,6 +756,16 @@ def validate_advance(document, envelope, env):
         if case["fixture"] != "success":
             require(document["outcome"] == "PASS" and gate_refusal(evidence["merge"]), "negative PASS lacks required-Gate refusal")
             negative_safe(evidence["after"], case)
+        elif merge_only_positive(envelope):
+            merge_only_scope(evidence)
+            if document["outcome"] == "STILL_BLOCKED_PROBE_ONLY":
+                require(gate_refusal(evidence["merge"]), "limited blocked result lacks exact Gate405")
+                negative_safe(evidence["after"], case)
+            else:
+                require(document["outcome"] == "MERGED_PROBE_ONLY" and merged_response(evidence["merge"]),
+                        "limited result cannot be upgraded to strict recovery")
+                validate_pr(evidence["after"]["pr"], case, merged=True)
+                validate_merge_commit(evidence["after"], envelope, evidence["merge"])
         elif document["outcome"] == "NOT_RECOVERED":
             require(gate_refusal(evidence["merge"]), "NOT_RECOVERED lacks required-Gate refusal")
             validate_pr(evidence["after"]["pr"], case)
