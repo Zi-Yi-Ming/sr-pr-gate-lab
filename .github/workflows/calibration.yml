@@ -1,60 +1,105 @@
-name: Basic Gate calibration
-
+name: A/B Gate experiment
 on:
   workflow_dispatch:
     inputs:
       phase:
-        description: Publish the basic checks, or probe an existing publication without republishing.
+        description: Preserved default-branch dispatch schema.
         required: true
         type: choice
         options:
-          - publish-and-probe
-          - probe-only
+        - publish-and-probe
+        - probe-only
         default: publish-and-probe
       manifest:
-        description: Frozen waiting, partial, failure and success PR identities as JSON.
+        description: Frozen bounded A/B envelope.
         required: false
         type: string
         default: ''
       source_run_id:
-        description: Earlier calibration run containing basic-publication, for probe-only.
+        description: Preserved input; A/B uses its verified envelope.
         required: false
         type: string
         default: ''
-
 permissions:
   contents: read
-
 concurrency:
-  group: sr-pr-gate-lab-calibration
+  group: sr-pr-gate-lab-ab
   cancel-in-progress: false
-
+env:
+  LAB_AB_MANIFEST: ${{ inputs.manifest }}
 jobs:
-  qualify:
-    if: github.ref == 'refs/heads/main' && inputs.phase == 'publish-and-probe'
+  seed:
+    if: fromJSON(inputs.manifest).stage == 'seed'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Run seed with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py seed --output out/seed.json
+  native_qualification:
+    name: Native qualification
+    if: fromJSON(inputs.manifest).stage == 'qualification'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Evaluate the fixed qualification fixtures
-        env:
-          LAB_MANIFEST: ${{ inputs.manifest }}
-        run: python3 lab.py qualify --output out/qualification.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: basic-qualification
-          path: out/qualification.json
-          retention-days: 14
-          if-no-files-found: error
-
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Run qualify with exact lab identities
+      run: python3 ab_lab.py qualify --output out/qualification.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-qualification
+        path: out/qualification.json
+        retention-days: 14
+        if-no-files-found: error
+  execution:
+    name: CI Execution
+    needs: native_qualification
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+    - name: Preserve the actual native qualification result
+      env:
+        RESULT: ${{ needs.native_qualification.result }}
+      run: test "$RESULT" = success
+  relay:
+    needs:
+    - native_qualification
+    - execution
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Run relay with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py relay --output out/relay.json
   publish:
-    needs: qualify
+    if: fromJSON(inputs.manifest).stage == 'driver'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -63,31 +108,32 @@ jobs:
       pull-requests: read
       checks: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: basic-qualification
-          path: out/input
-      - name: Publish the exact fixture results
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 lab.py publish --input out/input/qualification.json --output out/publication.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: basic-publication
-          path: out/publication.json
-          retention-days: 14
-          if-no-files-found: error
-
-  probe:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-qualification
+        path: out/input
+        github-token: ${{ github.token }}
+        run-id: ${{ fromJSON(inputs.manifest).qualification_run_id }}
+    - name: Run publish with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py publish --input out/input/qualification.json --output out/publication.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-publication
+        path: out/publication.json
+        retention-days: 14
+        if-no-files-found: error
+  baseline:
     needs: publish
-    if: >-
-      always() && github.ref == 'refs/heads/main'
-      && (needs.publish.result == 'success' || inputs.phase == 'probe-only')
+    outputs:
+      eligible: ${{ steps.proof.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -96,24 +142,1183 @@ jobs:
       pull-requests: read
       checks: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: basic-publication
-          path: out/input
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.phase == 'probe-only' && inputs.source_run_id || github.run_id }}
-      - name: Attempt ordinary merges, negative controls first
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 lab.py probe --input out/input/publication.json --output out/probe.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: basic-probe
-          path: out/probe.json
-          retention-days: 14
-          if-no-files-found: error
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/input
+    - name: Run baseline with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py baseline --input out/input/publication.json --output out/baseline.json
+      id: proof
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-baseline
+        path: out/baseline.json
+        retention-days: 14
+        if-no-files-found: error
+  recover:
+    needs: baseline
+    if: needs.baseline.outputs.eligible == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-baseline
+        path: out/input
+    - name: Run recover with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py recover --input out/input/baseline.json --output out/recovery.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-recovery
+        path: out/recovery.json
+        retention-days: 14
+        if-no-files-found: error
+  probe:
+    needs: recover
+    outputs:
+      advance: ${{ steps.proof.outputs.advance }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-recovery
+        path: out/input
+    - name: Run probe with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py probe --input out/input/recovery.json --output out/probe.json
+      id: proof
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-probe
+        path: out/probe.json
+        retention-days: 14
+        if-no-files-found: error
+  advance:
+    needs:
+    - baseline
+    - probe
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'driver' && ((needs.baseline.result == 'success'
+      && needs.baseline.outputs.advance == 'true') || (needs.probe.result == 'success' && needs.probe.outputs.advance
+      == 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ${{ needs.probe.outputs.advance == 'true' && 'ab-probe' || 'ab-baseline' }}
+        path: out/input
+    - name: Run advance with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_JSON: ${{ needs.probe.outputs.advance == 'true' && 'out/input/probe.json' || 'out/input/baseline.json'
+          }}
+      run: python3 ab_lab.py advance --input "$INPUT_JSON" --output out/advance.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-advance
+        path: out/advance.json
+        retention-days: 14
+        if-no-files-found: error
+  supplement_baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/source
+        github-token: ${{ github.token }}
+        run-id: '44048669391'
+    - id: proof
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 supplement_a.py baseline --source out/source/publication.json --output out/supplement-baseline.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: supplement-baseline
+        path: out/supplement-baseline.json
+        retention-days: 14
+        if-no-files-found: error
+    if: fromJSON(inputs.manifest).stage == 'supplement' && inputs.phase == 'probe-only' && inputs.source_run_id
+      == '44048669391'
+    outputs:
+      eligible: ${{ steps.proof.outputs.eligible }}
+  supplement_recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/source
+        github-token: ${{ github.token }}
+        run-id: '44048669391'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: supplement-baseline
+        path: out/input
+    - id: proof
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 supplement_a.py recover --source out/source/publication.json --input out/input/supplement-baseline.json
+        --output out/supplement-recover.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: supplement-recover
+        path: out/supplement-recover.json
+        retention-days: 14
+        if-no-files-found: error
+    needs: supplement_baseline
+    if: needs.supplement_baseline.outputs.eligible == 'true'
+  supplement_probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/source
+        github-token: ${{ github.token }}
+        run-id: '44048669391'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: supplement-recover
+        path: out/input
+    - id: proof
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 supplement_a.py probe --source out/source/publication.json --input out/input/supplement-recover.json
+        --output out/supplement-probe.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: supplement-probe
+        path: out/supplement-probe.json
+        retention-days: 14
+        if-no-files-found: error
+    needs: supplement_recover
+
+  ng_seed:
+    if: fromJSON(inputs.manifest).stage == 'native-seed'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+      actions: write
+      pull-requests: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_lab.py seed --output out/seed.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/seed.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='seed',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-seed
+        path: out/seed.json
+        retention-days: 14
+        if-no-files-found: error
+  ng_qualification:
+    if: fromJSON(inputs.manifest).stage == 'native-qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    name: Native experiment qualification
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_lab.py qualify --output out/qualification.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/qualification.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='qualify',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-qualification
+        path: out/qualification.json
+        retention-days: 14
+        if-no-files-found: error
+  ng_execution:
+    name: Native experiment CI Execution
+    needs: ng_qualification
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'native-qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    steps:
+    - name: Retain actual qualification job conclusion
+      env:
+        RESULT: ${{ needs.ng_qualification.result }}
+      run: test "$RESULT" = success
+  ng_qual_relay:
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'native-qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+      actions: write
+      pull-requests: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    needs:
+    - ng_qualification
+    - ng_execution
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-qualification
+        path: out/qualification
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_lab.py qual-relay --input out/qualification/qualification.json --output out/qual-relay.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/qual-relay.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='qual-relay',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-qual-relay
+        path: out/qual-relay.json
+        retention-days: 14
+        if-no-files-found: error
+  ng_publish:
+    if: fromJSON(inputs.manifest).stage == 'native-baseline'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: write
+      actions: read
+      pull-requests: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-qualification
+        path: out/qualification
+        github-token: ${{ github.token }}
+        run-id: ${{ fromJSON(inputs.manifest).qualification_run_id }}
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_lab.py publish --input out/qualification/qualification.json --output out/publication.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/publication.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='publish',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-publication
+        path: out/publication.json
+        retention-days: 14
+        if-no-files-found: error
+  ng_baseline:
+    if: fromJSON(inputs.manifest).stage == 'native-baseline'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      checks: read
+      actions: read
+      pull-requests: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    needs: ng_publish
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-publication
+        path: out/publication
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_lab.py baseline --input out/publication/publication.json --output out/baseline.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/baseline.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='baseline',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-baseline
+        path: out/baseline.json
+        retention-days: 14
+        if-no-files-found: error
+  ng_native_dispatch:
+    if: fromJSON(inputs.manifest).stage == 'native-baseline' && needs.ng_baseline.outputs.eligible == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+      actions: write
+      pull-requests: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    needs: ng_baseline
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-baseline
+        path: out/baseline
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_lab.py native-dispatch --input out/baseline/baseline.json --output out/native-dispatch.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/native-dispatch.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='native-dispatch',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-dispatch
+        path: out/native-dispatch.json
+        retention-days: 14
+        if-no-files-found: error
+  ng_gate:
+    if: always() && fromJSON(inputs.manifest).stage == 'native-gate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      pull-requests: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    name: ${{ fromJSON(inputs.manifest).stage == 'native-gate' && 'PR Gate' || 'Native Gate inactive' }}
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-baseline
+        path: out/baseline
+        github-token: ${{ github.token }}
+        run-id: ${{ fromJSON(inputs.manifest).baseline_run_id }}
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_lab.py gate --input out/baseline/baseline.json --output out/native.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/native.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='gate',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-verdict
+        path: out/native.json
+        retention-days: 14
+        if-no-files-found: error
+  ng_native_relay:
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'native-gate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+      actions: write
+      pull-requests: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    needs: ng_gate
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-baseline
+        path: out/baseline
+        github-token: ${{ github.token }}
+        run-id: ${{ fromJSON(inputs.manifest).baseline_run_id }}
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-verdict
+        path: out/native
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_lab.py native-relay --input out/baseline/baseline.json --native-input out/native/native.json --output out/native-relay.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/native-relay.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='native-relay',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-relay
+        path: out/native-relay.json
+        retention-days: 14
+        if-no-files-found: error
+  ng_probe:
+    if: fromJSON(inputs.manifest).stage == 'native-probe'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      checks: read
+      actions: read
+      pull-requests: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-baseline
+        path: out/baseline
+        github-token: ${{ github.token }}
+        run-id: ${{ fromJSON(inputs.manifest).baseline_run_id }}
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-verdict
+        path: out/native
+        github-token: ${{ github.token }}
+        run-id: ${{ fromJSON(inputs.manifest).native_run_id }}
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_lab.py probe --input out/baseline/baseline.json --native-input out/native/native.json --output out/probe.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/probe.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='probe',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-probe
+        path: out/probe.json
+        retention-days: 14
+        if-no-files-found: error
+  ng_advance:
+    if: always() && !cancelled() && ((fromJSON(inputs.manifest).stage == 'native-probe' && needs.ng_probe.outputs.advance == 'true') || (fromJSON(inputs.manifest).stage
+      == 'native-baseline' && needs.ng_baseline.outputs.advance == 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+      actions: write
+      pull-requests: read
+    env:
+      NATIVE_MANIFEST: ${{ inputs.manifest }}
+    needs:
+    - ng_baseline
+    - ng_probe
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      eligible: ${{ steps.proof.outputs.eligible || steps.fallback.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-probe
+        path: out/input
+      if: fromJSON(inputs.manifest).stage == 'native-probe'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-baseline
+        path: out/input
+      if: fromJSON(inputs.manifest).stage == 'native-baseline'
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_JSON: ${{ fromJSON(inputs.manifest).stage == 'native-probe' && 'out/input/probe.json' || 'out/input/baseline.json' }}
+      run: python3 native_lab.py advance --input "$INPUT_JSON" --output out/advance.json
+    - name: Retain fail-closed evidence if checkout or command failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/advance.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(schema_version=1,kind='advance',repository='Zi-Yi-Ming/sr-pr-gate-lab',protocol_valid=False,gate_success=False,eligible=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','eligible','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+      id: fallback
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-advance
+        path: out/advance.json
+        retention-days: 14
+        if-no-files-found: error
+  cx_seed:
+    if: always() && fromJSON(inputs.manifest).stage == 'control-seed'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+      pull-requests: read
+    env:
+      CONTROLS_MANIFEST: ${{ inputs.manifest }}
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - &id001
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_controls.py seed --output out/seed.json
+    - id: fallback
+      name: Preserve invalid evidence if a required step failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/seed.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(protocol_valid=False,gate_success=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: controls-seed
+        path: out/seed.json
+        retention-days: 14
+        if-no-files-found: error
+  cx_qualification:
+    if: always() && fromJSON(inputs.manifest).stage == 'control-qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+    env:
+      CONTROLS_MANIFEST: ${{ inputs.manifest }}
+    name: Control qualification
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - *id001
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_controls.py qualify --output out/qualification.json
+    - id: fallback
+      name: Preserve invalid evidence if a required step failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/qualification.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(protocol_valid=False,gate_success=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: controls-qualification
+        path: out/qualification.json
+        retention-days: 14
+        if-no-files-found: error
+  cx_execution:
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'control-qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      CONTROLS_MANIFEST: ${{ inputs.manifest }}
+      VALID: ${{ needs.cx_qualification.outputs.protocol_valid }}
+      SUCCESS: ${{ needs.cx_qualification.outputs.gate_success }}
+    needs:
+    - cx_qualification
+    name: Control CI Execution
+    steps:
+    - *id001
+    - run: test "$VALID" = true && test "$SUCCESS" = true
+  cx_qual_relay:
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'control-qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+      pull-requests: read
+    env:
+      CONTROLS_MANIFEST: ${{ inputs.manifest }}
+    needs:
+    - cx_qualification
+    - cx_execution
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - *id001
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: controls-qualification
+        path: out/input
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_controls.py qual-relay --input out/input/qualification.json --output out/qual-relay.json
+    - id: fallback
+      name: Preserve invalid evidence if a required step failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/qual-relay.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(protocol_valid=False,gate_success=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: controls-qual-relay
+        path: out/qual-relay.json
+        retention-days: 14
+        if-no-files-found: error
+  cx_gate:
+    if: always() && fromJSON(inputs.manifest).stage == 'control-gate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+    env:
+      CONTROLS_MANIFEST: ${{ inputs.manifest }}
+    name: ${{ fromJSON(inputs.manifest).stage == 'control-gate' && 'PR Gate' || 'Control Gate inactive' }}
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - *id001
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: controls-qualification
+        path: out/input
+        github-token: ${{ github.token }}
+        run-id: ${{ fromJSON(inputs.manifest).qualification_run_id }}
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_controls.py gate --input out/input/qualification.json --output out/gate.json
+    - id: fallback
+      name: Preserve invalid evidence if a required step failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/gate.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(protocol_valid=False,gate_success=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: controls-verdict
+        path: out/gate.json
+        retention-days: 14
+        if-no-files-found: error
+  cx_gate_relay:
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'control-gate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+      pull-requests: read
+    env:
+      CONTROLS_MANIFEST: ${{ inputs.manifest }}
+    needs:
+    - cx_gate
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - *id001
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: controls-verdict
+        path: out/input
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_controls.py gate-relay --input out/input/gate.json --output out/gate-relay.json
+    - id: fallback
+      name: Preserve invalid evidence if a required step failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/gate-relay.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(protocol_valid=False,gate_success=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: controls-gate-relay
+        path: out/gate-relay.json
+        retention-days: 14
+        if-no-files-found: error
+  cx_probe:
+    if: always() && fromJSON(inputs.manifest).stage == 'control-probe'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+      pull-requests: read
+    env:
+      CONTROLS_MANIFEST: ${{ inputs.manifest }}
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - *id001
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: controls-verdict
+        path: out/input
+        github-token: ${{ github.token }}
+        run-id: ${{ fromJSON(inputs.manifest).gate_run_id }}
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_controls.py probe --input out/input/gate.json --output out/probe.json
+    - id: fallback
+      name: Preserve invalid evidence if a required step failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/probe.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(protocol_valid=False,gate_success=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: controls-probe
+        path: out/probe.json
+        retention-days: 14
+        if-no-files-found: error
+  cx_advance:
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'control-probe'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+      pull-requests: read
+    env:
+      CONTROLS_MANIFEST: ${{ inputs.manifest }}
+    needs:
+    - cx_probe
+    outputs:
+      protocol_valid: ${{ steps.proof.outputs.protocol_valid || steps.fallback.outputs.protocol_valid }}
+      gate_success: ${{ steps.proof.outputs.gate_success || steps.fallback.outputs.gate_success }}
+      advance: ${{ steps.proof.outputs.advance || steps.fallback.outputs.advance }}
+      batch_complete: ${{ steps.proof.outputs.batch_complete || steps.fallback.outputs.batch_complete }}
+    steps:
+    - *id001
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: controls-probe
+        path: out/input
+    - id: proof
+      if: always() && !cancelled()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 native_controls.py advance --input out/input/probe.json --output out/advance.json
+    - id: fallback
+      name: Preserve invalid evidence if a required step failed
+      if: always()
+      run: |-
+        python3 - <<'PY'
+        from pathlib import Path
+        import json
+        import os
+        p=Path('out/advance.json')
+        if not p.exists():
+            p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text(json.dumps(dict(protocol_valid=False,gate_success=False,advance=False,batch_complete=False,strict_recovery_verified=False,outcome='INCONCLUSIVE',error='Checkout, download, or command failed before report creation'))+'\n')
+            with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as stream:
+                for key in ('protocol_valid','gate_success','advance','batch_complete'):
+                    stream.write(key+'=false\n')
+        PY
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: controls-advance
+        path: out/advance.json
+        retention-days: 14
+        if-no-files-found: error
