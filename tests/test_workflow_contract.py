@@ -14,13 +14,19 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotRegex(events, r"(?m)^  (push|pull_request|schedule|workflow_run|repository_dispatch):")
 
     def test_publisher_cannot_merge_and_probe_cannot_rewrite_checks(self):
-        publisher = self.text.split("\n  publish:\n", 1)[1].split("\n  probe:\n", 1)[0]
-        probe = self.text.split("\n  probe:\n", 1)[1]
-        self.assertIn("checks: write", publisher)
-        self.assertNotIn("contents: write", publisher)
-        self.assertIn("contents: write", probe)
-        self.assertIn("checks: read", probe)
-        self.assertNotIn("checks: write", probe)
+        def job(name):
+            return re.search(r"(?ms)^  " + name + r":\n(.*?)(?=^  [a-z_]+:\n|\Z)", self.text).group(1)
+        for name in ("publish", "recover"):
+            self.assertIn("checks: write", job(name))
+            self.assertNotIn("contents: write", job(name))
+        for name in ("baseline", "probe"):
+            self.assertIn("contents: write", job(name))
+            self.assertIn("checks: read", job(name))
+            self.assertNotIn("checks: write", job(name))
+        for name in ("seed", "relay", "advance"):
+            self.assertIn("actions: write", job(name))
+            self.assertNotIn("contents: write", job(name))
+            self.assertNotIn("checks: write", job(name))
         self.assertNotIn("pull-requests: write", self.text)
 
     def test_actions_are_immutable_and_shell_does_not_interpolate_inputs(self):
@@ -30,12 +36,16 @@ class WorkflowContractTests(unittest.TestCase):
         for line in self.text.splitlines():
             if "run:" in line:
                 self.assertNotIn("${{", line)
-        self.assertEqual(self.text.count("persist-credentials: false"), 3)
+        self.assertEqual(self.text.count("persist-credentials: false"), self.text.count("uses: actions/checkout@"))
 
-    def test_probe_resume_reuses_existing_publication(self):
+    def test_finite_chain_and_original_dispatch_schema(self):
         self.assertIn("probe-only", self.text)
-        self.assertIn("inputs.source_run_id || github.run_id", self.text)
-        self.assertIn("name: basic-publication", self.text)
+        self.assertIn("source_run_id:", self.text)
+        self.assertIn("group: sr-pr-gate-lab-ab", self.text)
+        self.assertIn("cancel-in-progress: false", self.text)
+        self.assertIn("needs.baseline.outputs.eligible == 'true'", self.text)
+        self.assertIn("needs.probe.outputs.advance == 'true'", self.text)
+        self.assertIn("name: ab-baseline", self.text)
         self.assertNotIn("sleep ", self.text)
 
 
