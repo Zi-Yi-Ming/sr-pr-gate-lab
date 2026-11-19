@@ -1,0 +1,17 @@
+name: Community
+
+'on':
+  pull_request:
+    types: [opened]
+    branches: [lab-target/mergify-native-gate]
+
+permissions:
+  contents: read
+
+jobs:
+  review-checks:
+    name: Community checks outside this fixture
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: exit 1
