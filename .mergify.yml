@@ -24,7 +24,7 @@ pull_request_rules:
   - name: Queue only the native Gate lab fixture
     conditions:
       - base = lab-target/mergify-native-gate
-      - head ~= ^lab/mergify-(native|old-api|old-api-sibling|old-api-sibling-clean|old-api-sibling-first|old-api-review)-gate$
+      - head ~= ^lab/mergify-(native|old-api|old-api-sibling|old-api-sibling-clean|old-api-sibling-first|old-api-review|production-api)-gate$
       - author = Zi-Yi-Ming
       - label = lab-mergify-native-gate
       - -draft
@@ -35,7 +35,7 @@ pull_request_rules:
   - name: Submit the review event for the isolated Community control
     conditions:
       - base = lab-target/mergify-native-gate
-      - head = lab/mergify-old-api-review-gate
+      - head ~= ^lab/mergify-(old-api-review|production-api)-gate$
       - author = Zi-Yi-Ming
       - assignee = Zi-Yi-Ming
       - -closed

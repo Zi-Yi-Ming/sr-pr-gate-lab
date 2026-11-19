@@ -1,0 +1,52 @@
+name: Publish the API Gate for the lab base advance control
+
+'on':
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Isolated original or Mergify draft number
+        required: true
+        type: string
+      original:
+        description: Isolated original pull request number
+        required: true
+        type: string
+      seed:
+        description: Skipped Community workflow run
+        required: true
+        type: string
+      qualification:
+        description: Successful Pull Request workflow run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish the attested lab API Gate
+    if: >-
+      github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab'
+      && github.ref == 'refs/heads/lab/mergify-native-config'
+      && github.actor == 'Zi-Yi-Ming'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: write
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify the tested revision and publish one check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LAB_PR: ${{ inputs.pr }}
+          LAB_ORIGINAL: ${{ inputs.original }}
+          LAB_SEED: ${{ inputs.seed }}
+          LAB_QUALIFICATION: ${{ inputs.qualification }}
+        run: python3 -B controls/mergify_production_api.py "$LAB_PR" "$LAB_ORIGINAL" "$LAB_SEED" "$LAB_QUALIFICATION"
