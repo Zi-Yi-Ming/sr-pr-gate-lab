@@ -24,7 +24,7 @@ pull_request_rules:
   - name: Queue only the native Gate lab fixture
     conditions:
       - base = lab-target/mergify-native-gate
-      - head ~= ^lab/mergify-(native|old-api|old-api-sibling|old-api-sibling-clean)-gate$
+      - head ~= ^lab/mergify-(native|old-api|old-api-sibling|old-api-sibling-clean|old-api-sibling-first)-gate$
       - author = Zi-Yi-Ming
       - label = lab-mergify-native-gate
       - -draft

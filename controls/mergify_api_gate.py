@@ -9,7 +9,8 @@ import subprocess
 REPO = "Zi-Yi-Ming/sr-pr-gate-lab"
 CONFIG = "lab/mergify-native-config"
 TARGET = "lab-target/mergify-native-gate"
-HEADS = {"lab/mergify-old-api-gate", "lab/mergify-old-api-sibling-gate", "lab/mergify-old-api-sibling-clean-gate"}
+ORDER_HEAD = "lab/mergify-old-api-sibling-first-gate"
+HEADS = {ORDER_HEAD, "lab/mergify-old-api-gate", "lab/mergify-old-api-sibling-gate", "lab/mergify-old-api-sibling-clean-gate"}
 APP_ID = 15368
 SEED = ".github/workflows/mergify-old-api-community.yml"
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -58,12 +59,38 @@ def publish(number, head, base, seed_id, run_id, attempt, request=api):
         "Expected the original PR's skipped Community run.",
     )
     seed_suite = seed["check_suite_id"]
+    expected_suites = {(seed_suite, "completed", "skipped")}
+    if head_branch == ORDER_HEAD:
+        runs = request(f"actions/runs?head_sha={head}&event=pull_request&per_page=30")
+        qualifications = [
+            run for run in runs["workflow_runs"]
+            if run["path"] == ".github/workflows/mergify-sibling-qualification.yml"
+        ]
+        require(len(qualifications) == 1, "Expected one independent Pull Request run.")
+        qualification = qualifications[0]
+        require(
+            qualification["event"] == "pull_request"
+            and qualification["name"] == "Pull Request"
+            and qualification["head_sha"] == head
+            and qualification["head_branch"] == head_branch
+            and qualification["status"] == "completed"
+            and qualification["conclusion"] == "success"
+            and qualification["run_attempt"] == 1
+            and [p["number"] for p in qualification["pull_requests"]] == [number]
+            and qualification["check_suite_id"] != seed_suite,
+            "The independent Pull Request suite must succeed before publishing.",
+        )
+        expected_suites.add((qualification["check_suite_id"], "completed", "success"))
+
     suites = request(f"commits/{head}/check-suites?app_id={APP_ID}&per_page=100")
+    observed = {
+        (suite["id"], suite["status"], suite["conclusion"])
+        for suite in suites["check_suites"]
+    }
     require(
-        suites["total_count"] == 1 and len(suites["check_suites"]) == 1
-        and [suites["check_suites"][0][field] for field in ("id", "status", "conclusion")]
-        == [seed_suite, "completed", "skipped"],
-        "The skipped Community suite must be the only Actions suite on the head.",
+        suites["total_count"] == len(suites["check_suites"]) == len(expected_suites)
+        and observed == expected_suites,
+        "The Actions suite inventory differs from the frozen control.",
     )
 
     source = pull["merge_commit_sha"]
