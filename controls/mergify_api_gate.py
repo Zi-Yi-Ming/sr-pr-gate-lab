@@ -9,7 +9,7 @@ import subprocess
 REPO = "Zi-Yi-Ming/sr-pr-gate-lab"
 CONFIG = "lab/mergify-native-config"
 TARGET = "lab-target/mergify-native-gate"
-HEAD = "lab/mergify-old-api-gate"
+HEADS = {"lab/mergify-old-api-gate", "lab/mergify-old-api-sibling-gate"}
 APP_ID = 15368
 SEED = ".github/workflows/mergify-old-api-community.yml"
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -36,11 +36,12 @@ def publish(number, head, base, seed_id, run_id, attempt, request=api):
     require(number > 0 and seed_id > 0 and run_id > 0 and attempt == 1
             and SHA.fullmatch(head) and SHA.fullmatch(base), "Invalid frozen identity.")
     pull = request(f"pulls/{number}")
+    head_branch = pull["head"]["ref"]
     require(
         pull["state"] == "open" and not pull["draft"]
         and pull["user"]["login"] == "Zi-Yi-Ming"
         and pull["head"]["repo"]["full_name"] == pull["base"]["repo"]["full_name"] == REPO
-        and (pull["head"]["ref"], pull["head"]["sha"]) == (HEAD, head)
+        and head_branch in HEADS and pull["head"]["sha"] == head
         and (pull["base"]["ref"], pull["base"]["sha"]) == (TARGET, base)
         and not pull["labels"],
         "The original test PR changed or was already submitted to Mergify.",
@@ -51,7 +52,7 @@ def publish(number, head, base, seed_id, run_id, attempt, request=api):
     seed = request(f"actions/runs/{seed_id}")
     require(
         seed["event"] == "pull_request" and seed["name"] == "Community"
-        and seed["path"] == SEED and seed["head_sha"] == head and seed["head_branch"] == HEAD
+        and seed["path"] == SEED and seed["head_sha"] == head and seed["head_branch"] == head_branch
         and seed["status"] == "completed" and seed["conclusion"] == "skipped"
         and [p["number"] for p in seed["pull_requests"]] == [number],
         "Expected the original PR's skipped Community run.",
