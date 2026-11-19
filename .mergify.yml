@@ -1,0 +1,33 @@
+merge_queue:
+  max_parallel_checks: 1
+  status_comments: none
+  queue_controls_comment: false
+  queued_label: null
+  checking_label: null
+  dequeued_label: null
+
+queue_rules:
+  - name: native-gate-lab
+    queue_conditions:
+      - base = lab-target/mergify-native-gate
+      - check-success = PR Gate
+    merge_conditions:
+      - base = lab-target/mergify-native-gate
+      - check-success = PR Gate
+      - check-success = Queue Draft Verified
+    merge_method: squash
+    update_method: merge
+    batch_size: 1
+    max_checks_retries: 1
+
+pull_request_rules:
+  - name: Queue only the native Gate lab fixture
+    conditions:
+      - base = lab-target/mergify-native-gate
+      - head = lab/mergify-native-gate
+      - author = Zi-Yi-Ming
+      - label = lab-mergify-native-gate
+      - -draft
+    actions:
+      queue:
+        name: native-gate-lab
