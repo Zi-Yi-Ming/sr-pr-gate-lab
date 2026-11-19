@@ -1,0 +1,47 @@
+name: PR Gate API coexistence seed suite
+
+'on':
+  pull_request:
+    types: [opened]
+    branches:
+      - lab-target/pr-event-api-waiting
+      - lab-target/pr-event-api-partial
+      - lab-target/pr-event-api-failure
+      - lab-target/pr-event-api-success
+
+permissions:
+  contents: read
+
+jobs:
+  identify:
+    name: Verify the seed revision
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - run: python3 -B -m controls.api_gate_coexistence seed
+
+  cancel:
+    name: Cancel the seed suite
+    needs: identify
+    if: ${{ !cancelled() && needs.identify.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Request cancellation of this run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$GITHUB_REPOSITORY" == Zi-Yi-Ming/sr-pr-gate-lab && "$GITHUB_EVENT_NAME" == pull_request ]]
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api --method POST --silent "repos/Zi-Yi-Ming/sr-pr-gate-lab/actions/runs/$GITHUB_RUN_ID/cancel"
+          sleep 30
+          echo 'Cancellation did not terminate the seed job' >&2
+          exit 1

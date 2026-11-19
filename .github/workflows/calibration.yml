@@ -117,3 +117,34 @@ jobs:
           path: out/probe.json
           retention-days: 14
           if-no-files-found: error
+
+  publish-api-coexistence:
+    name: Publish the verified prior Gate for the API coexistence control
+    if: >-
+      github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab'
+      && github.ref == 'refs/heads/lab/pr-event-api-publisher'
+      && inputs.phase == 'publish-and-probe'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: api-coexistence-prior
+          path: out/input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+      - name: Publish and record the assigned check suite
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LAB_MANIFEST: ${{ inputs.manifest }}
+          PRIOR_RUN_ID: ${{ inputs.source_run_id }}
+        run: python3 -B -m controls.api_gate_coexistence publish --receipt out/input/prior.json
