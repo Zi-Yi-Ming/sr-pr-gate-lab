@@ -44,7 +44,7 @@ jobs:
               assert head["ref"].startswith("mergify/merge-queue/")
           else:
               assert actor["login"] == "Zi-Yi-Ming"
-              assert head["ref"] == "lab/mergify-native-gate"
+              assert head["ref"] in ("lab/mergify-native-gate", "lab/mergify-production-base-advance")
 
           def git(*args):
               return subprocess.check_output(["git", *args], text=True).strip()
