@@ -1,0 +1,66 @@
+name: Pull Request
+
+'on':
+  pull_request:
+    types: [edited]
+    branches: [lab-target/mergify-native-gate]
+
+permissions:
+  contents: read
+
+jobs:
+  execution:
+    name: CI Execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run the same fixture for the independent suite
+        shell: bash
+        run: |
+          python3 -B - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          repo = "Zi-Yi-Ming/sr-pr-gate-lab"
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          pr = event["pull_request"]
+          head, base = pr["head"], pr["base"]
+          assert os.environ["GITHUB_REPOSITORY"] == repo
+          assert os.environ["GITHUB_EVENT_NAME"] == "pull_request" and event["action"] == "edited"
+          assert head["repo"]["full_name"] == base["repo"]["full_name"] == repo
+          assert head["ref"] == "lab/mergify-old-api-sibling-gate"
+          assert base["ref"] == "lab-target/mergify-native-gate"
+          assert not pr["draft"] and pr["user"]["login"] == "Zi-Yi-Ming"
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          source = git("rev-parse", "HEAD")
+          assert source == os.environ["GITHUB_SHA"]
+          fixture = json.loads(Path("mergify-gate-fixture.json").read_text())
+          assert fixture["contract"] == "native-gate-mergify"
+          assert sum(fixture["components"]) == 42
+
+          evidence = {
+              "pr": pr["number"], "head": head["sha"], "base": base["sha"],
+              "tested_revision": source, "tree": git("rev-parse", "HEAD^{tree}"),
+              "run": int(os.environ["GITHUB_RUN_ID"]),
+              "attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+          }
+          path = Path("out/sibling-qualification.json")
+          path.parent.mkdir(exist_ok=True)
+          path.write_text(json.dumps(evidence, indent=2) + "\n")
+          print(json.dumps(evidence))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sibling-qualification-attempt-${{ github.run_attempt }}
+          path: out/sibling-qualification.json
+          if-no-files-found: error
+          retention-days: 7
