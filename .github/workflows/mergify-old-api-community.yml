@@ -4,6 +4,8 @@ name: Community
   pull_request:
     types: [opened]
     branches: [lab-target/mergify-native-gate]
+  pull_request_review:
+    types: [submitted]
 
 permissions:
   contents: read
