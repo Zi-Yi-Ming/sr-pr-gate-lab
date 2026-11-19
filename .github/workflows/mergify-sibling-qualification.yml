@@ -34,9 +34,14 @@ jobs:
           assert os.environ["GITHUB_REPOSITORY"] == repo
           assert os.environ["GITHUB_EVENT_NAME"] == "pull_request" and event["action"] == "unassigned"
           assert head["repo"]["full_name"] == base["repo"]["full_name"] == repo
-          assert head["ref"] == "lab/mergify-old-api-review-gate"
           assert base["ref"] == "lab-target/mergify-native-gate"
-          assert not pr["draft"] and pr["user"]["login"] == "Zi-Yi-Ming"
+          actor = pr["user"]
+          if pr["draft"]:
+              assert actor["id"] == 37929162 and actor["login"] == "mergify[bot]"
+              assert head["ref"].startswith("mergify/merge-queue/")
+          else:
+              assert head["ref"] == "lab/mergify-production-api-gate"
+              assert actor["login"] == "Zi-Yi-Ming"
 
           def git(*args):
               return subprocess.check_output(["git", *args], text=True).strip()
@@ -46,12 +51,17 @@ jobs:
           fixture = json.loads(Path("mergify-gate-fixture.json").read_text())
           assert fixture["contract"] == "native-gate-mergify"
           assert sum(fixture["components"]) == 42
+          marker = Path("mergify-production-base-revision.txt")
+          assert marker.exists() == pr["draft"]
+          if pr["draft"]:
+              assert marker.read_text().strip() == "base-advanced-for-production-api-control"
 
           evidence = {
               "pr": pr["number"], "head": head["sha"], "base": base["sha"],
               "tested_revision": source, "tree": git("rev-parse", "HEAD^{tree}"),
               "run": int(os.environ["GITHUB_RUN_ID"]),
               "attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "draft": pr["draft"], "author": actor["login"],
           }
           path = Path("out/sibling-qualification.json")
           path.parent.mkdir(exist_ok=True)
@@ -64,3 +74,12 @@ jobs:
           path: out/sibling-qualification.json
           if-no-files-found: error
           retention-days: 7
+
+  draft-evidence:
+    name: Queue Draft Verified
+    needs: execution
+    if: github.event.pull_request.draft && github.event.pull_request.user.id == 37929162
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - run: echo 'Qualification passed on the authenticated Mergify draft and advanced base'
