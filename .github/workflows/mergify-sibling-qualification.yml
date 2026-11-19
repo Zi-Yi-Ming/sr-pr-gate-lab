@@ -2,7 +2,7 @@ name: Pull Request
 
 'on':
   pull_request:
-    types: [edited]
+    types: [unassigned]
     branches: [lab-target/mergify-native-gate]
 
 permissions:
@@ -32,9 +32,9 @@ jobs:
           pr = event["pull_request"]
           head, base = pr["head"], pr["base"]
           assert os.environ["GITHUB_REPOSITORY"] == repo
-          assert os.environ["GITHUB_EVENT_NAME"] == "pull_request" and event["action"] == "edited"
+          assert os.environ["GITHUB_EVENT_NAME"] == "pull_request" and event["action"] == "unassigned"
           assert head["repo"]["full_name"] == base["repo"]["full_name"] == repo
-          assert head["ref"] == "lab/mergify-old-api-sibling-gate"
+          assert head["ref"] == "lab/mergify-old-api-sibling-clean-gate"
           assert base["ref"] == "lab-target/mergify-native-gate"
           assert not pr["draft"] and pr["user"]["login"] == "Zi-Yi-Ming"
 
