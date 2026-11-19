@@ -10,7 +10,11 @@ REPO = "Zi-Yi-Ming/sr-pr-gate-lab"
 CONFIG = "lab/mergify-native-config"
 TARGET = "lab-target/mergify-native-gate"
 ORDER_HEAD = "lab/mergify-old-api-sibling-first-gate"
-HEADS = {ORDER_HEAD, "lab/mergify-old-api-gate", "lab/mergify-old-api-sibling-gate", "lab/mergify-old-api-sibling-clean-gate"}
+REVIEW_HEAD = "lab/mergify-old-api-review-gate"
+HEADS = {
+    ORDER_HEAD, REVIEW_HEAD, "lab/mergify-old-api-gate", "lab/mergify-old-api-sibling-gate",
+    "lab/mergify-old-api-sibling-clean-gate",
+}
 APP_ID = 15368
 SEED = ".github/workflows/mergify-old-api-community.yml"
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -51,8 +55,9 @@ def publish(number, head, base, seed_id, run_id, attempt, request=api):
     require(target["object"]["sha"] == base, "Experimental target changed.")
 
     seed = request(f"actions/runs/{seed_id}")
+    seed_event = "pull_request_review" if head_branch == REVIEW_HEAD else "pull_request"
     require(
-        seed["event"] == "pull_request" and seed["name"] == "Community"
+        seed["event"] == seed_event and seed["name"] == "Community"
         and seed["path"] == SEED and seed["head_sha"] == head and seed["head_branch"] == head_branch
         and seed["status"] == "completed" and seed["conclusion"] == "skipped"
         and [p["number"] for p in seed["pull_requests"]] == [number],
@@ -60,7 +65,7 @@ def publish(number, head, base, seed_id, run_id, attempt, request=api):
     )
     seed_suite = seed["check_suite_id"]
     expected_suites = {(seed_suite, "completed", "skipped")}
-    if head_branch == ORDER_HEAD:
+    if head_branch in {ORDER_HEAD, REVIEW_HEAD}:
         runs = request(f"actions/runs?head_sha={head}&event=pull_request&per_page=30")
         qualifications = [
             run for run in runs["workflow_runs"]
