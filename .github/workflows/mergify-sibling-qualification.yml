@@ -34,7 +34,7 @@ jobs:
           assert os.environ["GITHUB_REPOSITORY"] == repo
           assert os.environ["GITHUB_EVENT_NAME"] == "pull_request" and event["action"] == "unassigned"
           assert head["repo"]["full_name"] == base["repo"]["full_name"] == repo
-          assert head["ref"] == "lab/mergify-old-api-sibling-clean-gate"
+          assert head["ref"] == "lab/mergify-old-api-sibling-first-gate"
           assert base["ref"] == "lab-target/mergify-native-gate"
           assert not pr["draft"] and pr["user"]["login"] == "Zi-Yi-Ming"
 
