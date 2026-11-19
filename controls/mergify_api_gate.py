@@ -9,7 +9,7 @@ import subprocess
 REPO = "Zi-Yi-Ming/sr-pr-gate-lab"
 CONFIG = "lab/mergify-native-config"
 TARGET = "lab-target/mergify-native-gate"
-HEADS = {"lab/mergify-old-api-gate", "lab/mergify-old-api-sibling-gate"}
+HEADS = {"lab/mergify-old-api-gate", "lab/mergify-old-api-sibling-gate", "lab/mergify-old-api-sibling-clean-gate"}
 APP_ID = 15368
 SEED = ".github/workflows/mergify-old-api-community.yml"
 SHA = re.compile(r"[0-9a-f]{40}")
