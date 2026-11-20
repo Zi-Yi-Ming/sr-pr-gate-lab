@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   verify:
-    if: ${{ github.event.label.name == 'lab-5661-qualify' }}
+    if: ${{ (github.event.label.name == 'lab-5661-qualify' || startsWith(github.event.label.name, 'lab-5661-qualify-')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
