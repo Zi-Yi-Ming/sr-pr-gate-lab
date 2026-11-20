@@ -45,8 +45,14 @@ if (
 ):
     raise SystemExit("Qualification does not match the current PR and run")
 rev = api(f"git/commits/{r['tested']}")
-if [v["sha"] for v in rev["parents"]] != [r["base"], head] or rev["tree"]["sha"] != r["tree"]:
-    raise SystemExit("Wrong tested tree")
+target = api(f"git/ref/heads/{TARGET}")["object"]["sha"]
+# The PR payload's base SHA can lag a target ref update. The checked-out
+# merge ref and its Git parents identify the actual tested tree.
+if (
+    [v["sha"] for v in rev["parents"]] != [target, head]
+    or rev["tree"]["sha"] != r["tree"] or r["tested"] != p["merge_commit_sha"]
+):
+    raise SystemExit("Wrong tested tree or target branch")
 contracts = r["contracts"]
 if set(contracts) != {"automatic", "manual-a", "manual-b"} or contracts["automatic"] != "success":
     raise SystemExit("Bad contract inventory")
