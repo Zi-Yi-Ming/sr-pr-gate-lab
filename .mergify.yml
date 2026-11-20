@@ -36,6 +36,7 @@ queue_rules:
   - name: gate-5661-legacy
     queue_conditions:
       - base = lab-target/5661-v2
+      - label = lab-5661-queue-legacy
       - 'check-success = PR Gate'
     merge_conditions:
       - base = lab-target/5661-v2
