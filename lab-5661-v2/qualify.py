@@ -10,7 +10,9 @@ def git(*args):
 
 event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
 pull = event["pull_request"]
-mode = Path("lab-5661-v2/case.txt").read_text().strip()
+label = event["label"]["name"]
+prefix = "lab-5661-qualify-"
+mode = label.removeprefix(prefix) if label.startswith(prefix) else "success"
 if mode not in {"success", "waiting", "partial", "failure"}:
     raise SystemExit("Unknown laboratory fixture")
 if pull["draft"] and not (
