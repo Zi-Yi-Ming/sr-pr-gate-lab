@@ -1,0 +1,26 @@
+name: Pre-handoff readiness receipt
+'on':
+  pull_request:
+    types: [ready_for_review]
+    branches: [lab-target/5661-prehandoff]
+permissions:
+  contents: read
+jobs:
+  qualification:
+    name: Record new qualification generation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: python3 -B controls/pre_handoff_fixture.py
+        env:
+          LAB_KIND: new
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: new-receipt-${{ github.run_attempt }}
+          path: pre-handoff.json
+          if-no-files-found: error
+          retention-days: 7

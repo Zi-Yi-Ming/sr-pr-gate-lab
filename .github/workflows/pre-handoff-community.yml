@@ -1,0 +1,14 @@
+name: Community
+'on':
+  pull_request:
+    types: [opened]
+    branches: [lab-target/5661-prehandoff]
+permissions:
+  contents: read
+jobs:
+  community:
+    name: Community control marker
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: exit 1
