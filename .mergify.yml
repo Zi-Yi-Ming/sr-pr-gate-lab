@@ -20,6 +20,19 @@ queue_rules:
     batch_size: 1
     max_checks_retries: 1
 
+  - name: pre-handoff-5661
+    queue_conditions:
+      - base = lab-target/5661-prehandoff
+      - check-success = PR Gate
+    merge_conditions:
+      - base = lab-target/5661-prehandoff
+      - check-success = PR Gate
+      - check-success = Queue Draft Verified
+    merge_method: squash
+    update_method: merge
+    batch_size: 1
+    max_checks_retries: 1
+
 pull_request_rules:
   - name: Queue only the native Gate lab fixture
     conditions:
@@ -43,3 +56,14 @@ pull_request_rules:
     actions:
       review:
         type: APPROVE
+
+  - name: Queue only the pre-handoff controls
+    conditions:
+      - base = lab-target/5661-prehandoff
+      - head ~= ^lab/5661-prehandoff-(positive|queue)$
+      - author = Zi-Yi-Ming
+      - label = lab-mergify-native-gate
+      - -draft
+    actions:
+      queue:
+        name: pre-handoff-5661
