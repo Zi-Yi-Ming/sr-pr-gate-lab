@@ -1,0 +1,48 @@
+name: Lab 5661 Gate publisher
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Lab pull request number
+        required: true
+        type: string
+      run:
+        description: Lab qualification run number
+        required: true
+        type: string
+      variant:
+        description: Required result to publish
+        required: true
+        type: choice
+        options: [legacy, v2]
+      attempt:
+        description: Lab qualification attempt
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  checks: write
+  statuses: write
+jobs:
+  publish:
+    if: ${{ github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.ref == 'refs/heads/lab/mergify-native-config' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run }}
+          name: lab-5661-receipt-attempt-${{ inputs.attempt }}
+          path: ${{ runner.temp }}/lab-5661-evidence
+      - run: python3 lab-5661-v2/publish.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LAB_PR: ${{ inputs.pr }}
+          LAB_RUN: ${{ inputs.run }}
+          LAB_ATTEMPT: ${{ inputs.attempt }}
+          LAB_VARIANT: ${{ inputs.variant }}

@@ -33,6 +33,30 @@ queue_rules:
     batch_size: 1
     max_checks_retries: 1
 
+  - name: gate-5661-legacy
+    queue_conditions:
+      - base = lab-target/5661-v2
+      - 'check-success = PR Gate'
+    merge_conditions:
+      - base = lab-target/5661-v2
+      - 'check-success = PR Gate'
+    merge_method: squash
+    update_method: merge
+    batch_size: 1
+    max_checks_retries: 1
+
+  - name: gate-5661-v2
+    queue_conditions:
+      - base = lab-target/5661-v2
+      - 'check-success = @github-actions/PR Gate v2'
+    merge_conditions:
+      - base = lab-target/5661-v2
+      - 'check-success = @github-actions/PR Gate v2'
+    merge_method: squash
+    update_method: merge
+    batch_size: 1
+    max_checks_retries: 1
+
 pull_request_rules:
   - name: Queue only the native Gate lab fixture
     conditions:
@@ -67,3 +91,25 @@ pull_request_rules:
     actions:
       queue:
         name: pre-handoff-5661
+
+  - name: Queue only the 5661 legacy fixture
+    conditions:
+      - base = lab-target/5661-v2
+      - head = lab/5661-v2-success
+      - author = Zi-Yi-Ming
+      - label = lab-5661-queue-legacy
+      - -draft
+    actions:
+      queue:
+        name: gate-5661-legacy
+
+  - name: Queue only the 5661 v2 fixture
+    conditions:
+      - base = lab-target/5661-v2
+      - head = lab/5661-v2-success
+      - author = Zi-Yi-Ming
+      - label = lab-5661-queue-v2
+      - -draft
+    actions:
+      queue:
+        name: gate-5661-v2

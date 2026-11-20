@@ -1,0 +1,12 @@
+name: Lab 5661 Community
+on:
+  pull_request:
+    types: [assigned, unassigned]
+    branches: [lab-target/5661-v2]
+permissions: {}
+jobs:
+  no-gate:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'This Community run has no Gate'
