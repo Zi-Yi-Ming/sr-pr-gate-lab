@@ -58,6 +58,18 @@ queue_rules:
     batch_size: 1
     max_checks_retries: 1
 
+  - name: lab-pr-qualification-dual
+    queue_conditions:
+      - base ~= ^lab-target/(a-success|b-success|native-success)$
+      - 'check-success = @github-actions/PR Qualification'
+    merge_conditions:
+      - base ~= ^lab-target/(a-success|b-success|native-success)$
+      - 'check-success = @github-actions/PR Qualification'
+    merge_method: squash
+    update_method: merge
+    batch_size: 1
+    max_checks_retries: 0
+
 pull_request_rules:
   - name: Queue only the native Gate lab fixture
     conditions:
@@ -114,3 +126,15 @@ pull_request_rules:
     actions:
       queue:
         name: gate-5661-v2
+
+  - name: Verify only the three PR Qualification fixtures
+    conditions:
+      - base ~= ^lab-target/(a-success|b-success|native-success)$
+      - head ~= ^lab/(ab-a-success|ab-b-success|native-success)$
+      - author = Zi-Yi-Ming
+      - label = lab-pr-qualification-dual
+      - -draft
+      - -closed
+    actions:
+      queue:
+        name: lab-pr-qualification-dual
