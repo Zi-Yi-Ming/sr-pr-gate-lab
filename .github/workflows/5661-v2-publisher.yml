@@ -1,48 +1,148 @@
-name: Lab 5661 Gate publisher
+name: Lab 5661 same-name Gate probe
+run-name: Lab same-name Gate / ${{ inputs.variant }}
 on:
   workflow_dispatch:
     inputs:
-      pr:
-        description: Lab pull request number
-        required: true
-        type: string
-      run:
-        description: Lab qualification run number
-        required: true
-        type: string
+      pr: {type: string, required: true}
+      run: {type: string, required: true}
+      attempt: {type: string, required: true}
       variant:
-        description: Required result to publish
-        required: true
         type: choice
-        options: [legacy, v2]
-      attempt:
-        description: Lab qualification attempt
         required: true
-        type: string
+        options: [legacy, v2]
 permissions:
   contents: read
   actions: read
-  pull-requests: read
   checks: write
+  pull-requests: read
   statuses: write
+concurrency:
+  group: lab-5661-same-name-probe
+  cancel-in-progress: false
 jobs:
-  publish:
-    if: ${{ github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.ref == 'refs/heads/lab/mergify-native-config' }}
-    runs-on: ubuntu-latest
+  probe:
+    if: github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.ref == 'refs/heads/lab/5661-same-name-probe-20261122'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_INPUT: ${{ inputs.pr }}
+      RUN_INPUT: ${{ inputs.run }}
+      ATTEMPT_INPUT: ${{ inputs.attempt }}
+      VARIANT: ${{ inputs.variant }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.run }}
-          name: lab-5661-receipt-attempt-${{ inputs.attempt }}
-          path: ${{ runner.temp }}/lab-5661-evidence
-      - run: python3 lab-5661-v2/publish.py
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LAB_PR: ${{ inputs.pr }}
-          LAB_RUN: ${{ inputs.run }}
-          LAB_ATTEMPT: ${{ inputs.attempt }}
-          LAB_VARIANT: ${{ inputs.variant }}
+      - name: Test same-name publication and legacy retirement
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import io
+          import json
+          import os
+          import subprocess
+          import zipfile
+
+          repo = "Zi-Yi-Ming/sr-pr-gate-lab"
+          ref = "refs/heads/lab/5661-same-name-probe-20261122"
+          head = "ef4cc2c49f190caacf1f49e37b07e70f30966ea8"
+          base = "525bc8117c9176b158d206b324c904e18aab8534"
+          target = "lab-target/b2-success"
+          run_id, pr_id = 44059023716, 16
+          old_ids = {133956150244, 133956602296}
+          gate = "PR Gate"
+          variant = os.environ["VARIANT"]
+
+          def require(value, message):
+              if not value:
+                  raise SystemExit(message)
+
+          def raw(path, method="GET", payload=None):
+              command = ["gh", "api", f"repos/{repo}/{path}", "--method", method]
+              if payload is not None:
+                  command += ["--input", "-"]
+              return subprocess.run(
+                  command,
+                  input=json.dumps(payload).encode() if payload is not None else None,
+                  stdout=subprocess.PIPE,
+                  check=True,
+                  timeout=30,
+              ).stdout
+
+          def api(path, method="GET", payload=None):
+              return json.loads(raw(path, method, payload))
+
+          def gate_checks():
+              result = api(f"commits/{head}/check-runs?filter=all&per_page=100")
+              require(result["total_count"] == len(result["check_runs"]), "check inventory incomplete")
+              return [item for item in result["check_runs"] if item["name"] == gate]
+
+          def statuses():
+              return [
+                  status for status in api(f"commits/{head}/statuses?per_page=100")
+                  if status["context"] == gate
+              ]
+
+          require(
+              os.environ["GITHUB_REPOSITORY"] == repo and os.environ["GITHUB_REF"] == ref
+              and (os.environ["PR_INPUT"], os.environ["RUN_INPUT"], os.environ["ATTEMPT_INPUT"])
+              == ("16", "44059023716", "1") and variant in {"legacy", "v2"},
+              "wrong lab scope",
+          )
+          pr = api(f"pulls/{pr_id}")
+          require(
+              pr["state"] == "open" and pr["head"]["sha"] == head
+              and pr["base"]["ref"] == target and pr["base"]["sha"] == base,
+              "lab PR changed",
+          )
+          checks = gate_checks()
+          require({item["id"] for item in checks} == old_ids, "unexpected legacy Gate inventory")
+          for item in checks:
+              require(
+                  item["app"]["id"] == 15368 and item["head_sha"] == head
+                  and item["conclusion"] == "success"
+                  and item["external_id"] == f"lab-ab:current:B_success:{run_id}:1",
+                  "unexpected legacy Gate ownership",
+              )
+          run = api(f"actions/runs/{run_id}/attempts/1")
+          jobs = api(f"actions/runs/{run_id}/attempts/1/jobs?per_page=100")["jobs"]
+          require(
+              run["head_sha"] == head and run["conclusion"] == "success"
+              and run["path"] == ".github/workflows/calibration.yml"
+              and any(job["id"] == 133955895012 and job["conclusion"] == "success" for job in jobs),
+              "prior qualification missing",
+          )
+          evidence = raw("actions/artifacts/14317266851/zip")
+          require(
+              hashlib.sha256(evidence).hexdigest()
+              == "68c789b22907b14cd33f745543da40f7519c61f5aa7615f8badfab64c5a2a7a8",
+              "unexpected qualification archive",
+          )
+          with zipfile.ZipFile(io.BytesIO(evidence)) as archive:
+              require(len(archive.namelist()) == 1, "unexpected receipt inventory")
+              receipt = json.loads(archive.read(archive.namelist()[0]))
+          require(receipt["producer"]["sha"] == head, "receipt head mismatch")
+          if variant == "legacy":
+              require(not statuses(), "same-name status already exists")
+              written = api(f"statuses/{head}", "POST", {
+                  "context": gate, "state": "success",
+                  "description": "Verified isolated lab attempt 1",
+                  "target_url": f"https://github.com/{repo}/actions/runs/{run_id}/attempts/1",
+              })
+              print(json.dumps({"phase": "coexist", "status_id": written["id"],
+                                "creator": written["creator"]["id"], "old_ids": sorted(old_ids)}))
+          else:
+              existing = statuses()
+              require(
+                  len(existing) == 1 and existing[0]["state"] == "success"
+                  and existing[0]["creator"]["id"] == 41898282
+                  and existing[0]["target_url"].endswith(f"/{run_id}/attempts/1"),
+                  "same-name replacement status unavailable",
+              )
+              for check_id in sorted(old_ids):
+                  updated = api(f"check-runs/{check_id}", "PATCH", {"name": "PR Gate (retired lab Check)"})
+                  require(updated["name"] == "PR Gate (retired lab Check)" and updated["conclusion"] == "success",
+                          "could not retire the exact lab check")
+              require(not gate_checks(), "legacy Gate still has the protected name")
+              print(json.dumps({"phase": "retired", "status_id": existing[0]["id"],
+                                "retired_ids": sorted(old_ids)}))
+          PY
