@@ -1,0 +1,20 @@
+name: Persist a benchmark checkpoint
+description: Snapshot the live model progress and memory counters and upload them before the benchmark ends
+inputs:
+  seconds:
+    required: true
+    description: Elapsed seconds since the benchmark command started
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        CHECKPOINT_TIME: ${{ inputs.seconds }}
+      run: python3 -u diagnostics.py snapshot "$REPORTS" "$RUNNER_TEMP/bench-checkpoint-$CHECKPOINT_TIME" "$CHECKPOINT_TIME"
+    - uses: actions/upload-artifact@v4
+      continue-on-error: true
+      with:
+        name: ${{ env.EXPERIMENT }}-t${{ inputs.seconds }}
+        path: ${{ runner.temp }}/bench-checkpoint-${{ inputs.seconds }}
+        if-no-files-found: error
+        retention-days: 14

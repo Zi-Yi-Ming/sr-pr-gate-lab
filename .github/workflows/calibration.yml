@@ -1,119 +1,119 @@
-name: Basic Gate calibration
-
+name: Guard benchmark baseline diagnostics
+run-name: Guard benchmark baseline diagnostics (2e4171d4 vs 157431c86)
 on:
   workflow_dispatch:
     inputs:
       phase:
-        description: Publish the basic checks, or probe an existing publication without republishing.
-        required: true
+        description: Select probe-only for the one diagnostic.
         type: choice
+        required: true
         options:
           - publish-and-probe
           - probe-only
-        default: publish-and-probe
-      manifest:
-        description: Frozen waiting, partial, failure and success PR identities as JSON.
-        required: false
-        type: string
-        default: ''
-      source_run_id:
-        description: Earlier calibration run containing basic-publication, for probe-only.
-        required: false
-        type: string
-        default: ''
+        default: probe-only
 
 permissions:
   contents: read
 
-concurrency:
-  group: sr-pr-gate-lab-calibration
-  cancel-in-progress: false
-
 jobs:
-  qualify:
-    if: github.ref == 'refs/heads/main' && inputs.phase == 'publish-and-probe'
+  baseline:
+    if: ${{ github.ref_name == 'lab/7093-base-perf-diagnostic-20261121' && inputs.phase == 'probe-only' }}
+    name: ${{ matrix.base.label }} / ${{ matrix.suite }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        base:
+          - label: 2e4171d4
+            sha: 2e4171d4dd3d72d61188bb7ec529211fbc3263ad
+          - label: 157431c86
+            sha: 157431c868d81ba56f736809390e2743f0c54f5e
+        suite: [Cache, Classify]
+    env:
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_SRUN_CACHE_DIR: ${{ runner.temp }}/diagnostic-model-cache
+      REPORTS: ${{ runner.temp }}/guard-bench
+      EXPERIMENT: ${{ matrix.base.label }}-${{ matrix.suite }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Evaluate the fixed qualification fixtures
-        env:
-          LAB_MANIFEST: ${{ inputs.manifest }}
-        run: python3 lab.py qualify --output out/qualification.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
+      - uses: actions/checkout@v4
         with:
-          name: basic-qualification
-          path: out/qualification.json
-          retention-days: 14
-          if-no-files-found: error
-
-  publish:
-    needs: qualify
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: read
-      checks: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
+          repository: vllm-project/semantic-router
+          ref: ${{ matrix.base.sha }}
+          path: base
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@v4
         with:
-          name: basic-qualification
-          path: out/input
-      - name: Publish the exact fixture results
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 lab.py publish --input out/input/qualification.json --output out/publication.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: basic-publication
-          path: out/publication.json
-          retention-days: 14
-          if-no-files-found: error
-
-  probe:
-    needs: publish
-    if: >-
-      always() && github.ref == 'refs/heads/main'
-      && (needs.publish.result == 'success' || inputs.phase == 'probe-only')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: write
-      actions: read
-      pull-requests: read
-      checks: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
+          repository: vllm-project/semantic-router
+          ref: 14e67c09898f91a4997d600c4bb2bd3d8f2185a3
+          path: harness
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/setup-go@v5
         with:
-          name: basic-publication
-          path: out/input
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.phase == 'probe-only' && inputs.source_run_id || github.run_id }}
-      - name: Attempt ordinary merges, negative controls first
+          go-version: "1.25"
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify revisions and use the original benchmark harness
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 lab.py probe --input out/input/publication.json --output out/probe.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
+          BASE_SHA: ${{ matrix.base.sha }}
+        run: |
+          test "$(git -C base rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git -C harness rev-parse HEAD)" = 14e67c09898f91a4997d600c4bb2bd3d8f2185a3
+          mv base/perf base/original-perf
+          cp -a harness/perf base/perf
+          mkdir -p "$REPORTS"
+          {
+            git -C base rev-parse HEAD
+            git -C harness rev-parse HEAD
+            sha256sum base/perf/benchmarks/model_runtime_test.go
+            go version
+            python3 --version
+            lscpu
+            df -h .
+          } > "$REPORTS/runner.log"
+      - name: Install the model runtime as in the original workflow
+        working-directory: harness
+        run: make harness-venv-install model-runtime-install
+      - name: Start the instrumented base benchmark
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          base="$GITHUB_WORKSPACE/base"
+          export PYTHONPATH="$base/src/model-runtime"
+          export GIT_WORK_TREE="$base"
+          nohup "$GITHUB_WORKSPACE/harness/.venv-agent/bin/python" -u "$GITHUB_WORKSPACE/diagnostics.py" \
+            run "$base" "$SUITE" "$REPORTS" > "$REPORTS/supervisor.log" 2>&1 < /dev/null &
+          echo "$!" > "$REPORTS/supervisor.pid"
+      - uses: ./.github/actions/checkpoint
         with:
-          name: basic-probe
-          path: out/probe.json
+          seconds: "20"
+      - uses: ./.github/actions/checkpoint
+        with:
+          seconds: "75"
+      - uses: ./.github/actions/checkpoint
+        with:
+          seconds: "130"
+      - uses: ./.github/actions/checkpoint
+        with:
+          seconds: "165"
+      - uses: ./.github/actions/checkpoint
+        with:
+          seconds: "210"
+      - uses: ./.github/actions/checkpoint
+        with:
+          seconds: "360"
+      - name: Collect the benchmark result
+        run: python3 -u diagnostics.py wait "$REPORTS"
+      - name: Upload final diagnostic evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.EXPERIMENT }}-final
+          path: ${{ env.REPORTS }}
+          if-no-files-found: warn
           retention-days: 14
-          if-no-files-found: error
