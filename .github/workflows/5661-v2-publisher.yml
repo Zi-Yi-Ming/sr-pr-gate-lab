@@ -1,5 +1,4 @@
-name: Lab same-name requested CI fence
-run-name: Lab PR Gate fence / ${{ inputs.variant }}
+name: Lab native Gate initial receipt
 on:
   workflow_dispatch:
     inputs:
@@ -12,97 +11,38 @@ on:
         options: [legacy, v2]
 permissions:
   contents: read
-  actions: write
+  actions: read
   pull-requests: read
   statuses: write
-concurrency:
-  group: lab-5661-same-name-probe
-  cancel-in-progress: false
 jobs:
-  probe:
-    if: github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.ref == 'refs/heads/lab/5661-same-name-probe-20261122'
+  receipt:
+    if: github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.ref == 'refs/heads/lab/5661-native-guard-writer-20261122'
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    timeout-minutes: 3
     env:
       GH_TOKEN: ${{ github.token }}
-      PR_INPUT: ${{ inputs.pr }}
-      RUN_INPUT: ${{ inputs.run }}
-      ATTEMPT_INPUT: ${{ inputs.attempt }}
-      VARIANT: ${{ inputs.variant }}
+      LAB_INPUT: ${{ format('{0}/{1}/{2}/{3}', inputs.pr, inputs.run, inputs.attempt, inputs.variant) }}
     steps:
-      - name: Fence the next attempt before rerunning the same head
+      - name: Publish the verified initial fixture status
         shell: bash
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import subprocess
-
-          repo = "Zi-Yi-Ming/sr-pr-gate-lab"
-          ref = "refs/heads/lab/5661-same-name-probe-20261122"
-          head = "ef4cc2c49f190caacf1f49e37b07e70f30966ea8"
-          base = "525bc8117c9176b158d206b324c904e18aab8534"
-          run_id = 44059023716
-          variant = os.environ["VARIANT"]
-          route = f"actions/runs/{run_id}"
-          pending = {
-              "context": "PR Gate",
-              "state": "pending",
-              "target_url": f"https://github.com/{repo}/actions/runs/{run_id}/attempts/3",
-              "description": "Waiting for authorized CI rerun",
-          }
-
-          def require(value, message):
-              if not value:
-                  raise SystemExit(message)
-
-          def api(path, method="GET", payload=None):
-              command = ["gh", "api", f"repos/{repo}/{path}", "--method", method]
-              if payload is not None:
-                  command += ["--input", "-"]
-              output = subprocess.run(
-                  command,
-                  input=json.dumps(payload).encode() if payload is not None else None,
-                  stdout=subprocess.PIPE,
-                  check=True,
-                  timeout=30,
-              ).stdout
-              return json.loads(output) if output.strip() else None
-
-          def same_revision():
-              pr = api("pulls/16")
-              run = api(route)
-              require(pr["state"] == "open" and pr["head"]["sha"] == head
-                      and pr["base"]["sha"] == base and pr["base"]["ref"] == "lab-target/b2-success",
-                      "lab PR revision changed")
-              require(run["head_sha"] == head and run["run_attempt"] == 2
-                      and run["path"] == ".github/workflows/calibration.yml"
-                      and run["status"] == "completed", "lab CI attempt changed")
-
-          def latest_gate():
-              statuses = api(f"commits/{head}/statuses?per_page=100")
-              for item in statuses:
-                  if item["context"] == "PR Gate" and item["creator"]["id"] == 41898282:
-                      return item
-              raise SystemExit("Trusted lab Gate unavailable")
-
-          require(os.environ["GITHUB_REPOSITORY"] == repo and os.environ["GITHUB_REF"] == ref
-                  and (os.environ["PR_INPUT"], os.environ["RUN_INPUT"], os.environ["ATTEMPT_INPUT"])
-                  == ("16", "44059023716", "2") and variant in {"legacy", "v2"}, "wrong lab scope")
-
-          same_revision()
-          current = latest_gate()
-          if variant == "legacy":
-              require(current["id"] == 59556733391 and current["state"] == "success",
-                      "wrong starting control")
-              posted = api(f"statuses/{head}", "POST", pending)
-              current = latest_gate()
-              require(current["id"] == posted["id"], "write was not visible on readback")
-          require(all(current[key] == value for key, value in pending.items()), "pending missing")
-          same_revision()
-          print(json.dumps({"head": head, "previous_attempt": 2, "pending_status_id": current["id"],
-                            "created_at": current["created_at"], "variant": variant}), flush=True)
-          if variant == "v2":
-              api(f"{route}/rerun", "POST")
-              print(json.dumps({"accepted": True, "run": run_id, "next_attempt": 3}), flush=True)
-          PY
+          set -eu
+          repo='Zi-Yi-Ming/sr-pr-gate-lab'
+          head='9418c2868ea2d91ed70ddc26e7814cccd61b70f2'
+          run=44926706655
+          test "$LAB_INPUT" = "21/$run/1/legacy"
+          gh api "repos/$repo/pulls/21" |
+            jq -e --arg h "$head" '.state == "open" and .head.sha == $h and .base.ref == "lab-target/control-clean"' >/dev/null
+          gh api "repos/$repo/actions/runs/$run" |
+            jq -e --arg h "$head" '
+              .event=="pull_request" and .head_sha==$h and .run_attempt==1 and .conclusion=="success"
+              and .path==".github/workflows/same-name-native-guard-test.yml"
+            ' >/dev/null
+          gh api "repos/$repo/actions/runs/$run/attempts/1/jobs" |
+            jq -e 'any(.jobs[]; .name=="PR Gate" and .conclusion=="success")' >/dev/null
+          gh api "repos/$repo/commits/$head/statuses" |
+            jq -e 'all(.[]; .context!="PR Gate")' >/dev/null
+          gh api "repos/$repo/statuses/$head" --method POST \
+            -f context='PR Gate' -f state=success -f description='Verified native lab attempt 1' \
+            -f target_url="https://github.com/$repo/actions/runs/$run/attempts/1" \
+            --jq '{id,context,state,target_url,creator:.creator.id}'
