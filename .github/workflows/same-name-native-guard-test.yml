@@ -1,0 +1,32 @@
+name: Lab native Gate freshness test
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [lab-target/control-clean]
+permissions:
+  contents: read
+jobs:
+  qualification:
+    if: github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.event.pull_request.number == 21
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Use a controlled failed retry
+        env:
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          if test "$ATTEMPT" != 1; then
+            sleep 35
+            exit 1
+          fi
+  gate:
+    name: PR Gate
+    needs: qualification
+    if: ${{ !cancelled() && github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.event.pull_request.number == 21 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the current native qualification
+        env:
+          RESULT: ${{ needs.qualification.result }}
+        run: test "$RESULT" = success
