@@ -32,10 +32,12 @@ jobs:
         suite: [Cache, Classify]
     env:
       HF_HUB_DISABLE_XET: "1"
-      VLLM_SRUN_CACHE_DIR: ${{ runner.temp }}/diagnostic-model-cache
-      REPORTS: ${{ runner.temp }}/guard-bench
       EXPERIMENT: ${{ matrix.base.label }}-${{ matrix.suite }}
     steps:
+      - name: Set diagnostic paths
+        run: |
+          echo "VLLM_SRUN_CACHE_DIR=$RUNNER_TEMP/diagnostic-model-cache" >> "$GITHUB_ENV"
+          echo "REPORTS=$RUNNER_TEMP/guard-bench" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
