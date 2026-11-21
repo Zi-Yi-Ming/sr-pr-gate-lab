@@ -1,4 +1,4 @@
-name: Lab dual publication
+name: Lab queue-draft qualification dual publisher
 on:
   workflow_dispatch:
     inputs:
@@ -26,74 +26,117 @@ jobs:
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
-      LAB_PR: ${{ inputs.pr }}
-      LAB_RUN: ${{ inputs.run }}
-      LAB_ATTEMPT: ${{ inputs.attempt }}
-      LAB_VARIANT: ${{ inputs.variant }}
+      LAB_CASES: ${{ inputs.pr }}
+      LAB_BASE: ${{ inputs.run }}
+      LAB_PENDING_RUN: ${{ inputs.attempt }}
+      LAB_PHASE: ${{ inputs.variant }}
     steps:
-      - name: Publish two contexts on isolated fixture heads
+      - name: Verify and dual-publish on the exact lab heads
         run: |
           python3 - <<'PY'
           import json
           import os
+          import re
           import subprocess
+          from urllib.parse import quote
 
           repo = "Zi-Yi-Ming/sr-pr-gate-lab"
           assert os.environ["GITHUB_REPOSITORY"].lower() == repo.lower()
-          assert os.environ["GITHUB_REF"] == "refs/heads/lab/pr-qualification-dual-20261122"
-          assert tuple(os.environ[k] for k in ("LAB_PR", "LAB_RUN", "LAB_ATTEMPT", "LAB_VARIANT")) == ("20", "44074619714", "1", "v2")
-          base = "525bc8117c9176b158d206b324c904e18aab8534"
-          fixtures = {
-              8: ("lab/ab-a-success", "lab-target/a-success", "12d72aa6b4c343c4ac20bce1bdc082522a4c2467", "pending"),
-              12: ("lab/ab-b-success", "lab-target/b-success", "f9e97f92629e2f735ee5bc888992a272e93927b7", "failure"),
-              20: ("lab/native-success", "lab-target/native-success", "71b04c917815fca2902f73d74d426916a2c23b1d", "success"),
-          }
+          assert os.environ["GITHUB_REF"] == "refs/heads/lab/pr-qualification-queue-draft-20261122"
+          assert os.environ["LAB_CASES"] == "both"
+          base, phase, witness = (os.environ[name] for name in ("LAB_BASE", "LAB_PHASE", "LAB_PENDING_RUN"))
+          assert re.fullmatch("[0-9a-f]{40}", base)
+          assert phase in {"original", "pending", "complete"}
+          assert witness.isdecimal()
+          old = "525bc8117c9176b158d206b324c904e18aab8534"
+          cases = [
+              (8, "lab/ab-a-success", "12d72aa6b4c343c4ac20bce1bdc082522a4c2467", "failure"),
+              (12, "lab/ab-b-success", "f9e97f92629e2f735ee5bc888992a272e93927b7", "success"),
+          ]
 
           def api(path, data=None):
-              cmd = ["gh", "api", f"repos/{repo}/{path}"]
+              command = ["gh", "api", f"repos/{repo}/{path}"]
               if data is not None:
-                  cmd += ["--method", "POST", "--input", "-"]
-              result = subprocess.run(cmd, input=json.dumps(data) if data is not None else None,
-                                      text=True, capture_output=True, check=True)
-              return json.loads(result.stdout)
+                  command += ["--method", "POST", "--input", "-"]
+              p = subprocess.run(command, input=json.dumps(data) if data is not None else None,
+                                 text=True, capture_output=True, timeout=25)
+              if p.returncode:
+                  raise RuntimeError(f"{path}: {p.stderr.strip()}")
+              return json.loads(p.stdout)
 
-          def validate_pull(number, head_ref, base_ref, sha):
-              pr = api(f"pulls/{number}")
-              assert pr["state"] == "open" and not pr["draft"] and not pr["merged"]
-              assert pr["user"]["login"] == "Zi-Yi-Ming"
-              assert (pr["head"]["ref"], pr["head"]["sha"]) == (head_ref, sha)
-              assert (pr["base"]["ref"], pr["base"]["sha"]) == (base_ref, base)
-              assert all(pr[key]["repo"]["full_name"].lower() == repo.lower() for key in ("head", "base"))
+          def pull(n, branch, *, draft=False):
+              p = api(f"pulls/{n}")
+              assert (p["state"], p["draft"], p["base"]["ref"], p["base"]["sha"]) == ("open", draft, branch, base), (n, p["state"], p["base"]["ref"], p["base"]["sha"])
+              assert all(p[k]["repo"]["full_name"].lower() == repo.lower() for k in ("head", "base")), n
+              return p
 
-          for number, (head_ref, base_ref, sha, state) in fixtures.items():
-              validate_pull(number, head_ref, base_ref, sha)
-          run = api("actions/runs/44074619714")
-          check = api("check-runs/134009365725")
-          assert (run["head_sha"], run["run_attempt"], run["status"], run["conclusion"]) == (fixtures[20][2], 1, "completed", "success")
-          assert (check["head_sha"], check["check_suite"]["id"], check["app"]["id"], check["name"], check["conclusion"]) == (fixtures[20][2], run["check_suite_id"], 15368, "PR Gate", "success")
+          def latest(sha):
+              return next((item for item in api(f"commits/{sha}/statuses?per_page=100")
+                           if item["context"] == "PR Qualification"), {})
 
-          for number, (head_ref, base_ref, sha, state) in fixtures.items():
-              validate_pull(number, head_ref, base_ref, sha)
-              source_url = f"https://github.com/{repo}/actions/runs/44074619714/attempts/1"
-              control_url = f"https://github.com/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-              legacy = api("check-runs", {
-                  "name": "PR Gate", "head_sha": sha, "external_id": f"lab-dual-qualification:{number}:{sha}",
-                  "status": "completed", "conclusion": "success",
-                  "details_url": source_url if number == 20 else control_url,
-                  "output": {"title": "Lab legacy Gate passed", "summary": "This isolated control keeps the old publisher green."},
-              })
-              current = api(f"statuses/{sha}", {
-                  "context": "PR Qualification", "state": state,
-                  "description": {"pending":"Waiting for lab qualification", "failure":"Lab qualification failed", "success":"Existing lab qualification passed"}[state],
-                  "target_url": source_url if number == 20 else control_url,
-              })
-              assert (legacy["name"], legacy["app"]["id"], legacy["conclusion"], legacy["head_sha"]) == ("PR Gate", 15368, "success", sha)
-              assert (current["context"], current["state"], current["creator"]["id"]) == ("PR Qualification", state, 41898282)
-              observed = api(f"commits/{sha}/status")
-              assert any(status["id"] == current["id"] and status["state"] == state for status in observed["statuses"])
-              summary = {"pr": number, "head": sha, "legacy_check": legacy["id"], "qualification_status": current["id"], "state": state}
-              print(json.dumps(summary), flush=True)
-              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
-                  stream.write(f"- #{number}: {state}, legacy Check {legacy['id']}, Qualification status {current['id']}\n")
+          common = api(f"git/commits/{base}")
+          assert [p["sha"] for p in common["parents"]] == [old]
+          assert common["message"] == "Lab: advance base for the PR Qualification queue-draft controls"
+          canary = api(f"contents/lab-pr-qualification-draft-base.txt?ref={base}")
+          rows = []
+          for n, branch, head, expected in cases:
+              ref = f"lab-target/pr-qualification-draft-{expected}"
+              original = pull(n, ref)
+              assert (original["head"]["ref"], original["head"]["sha"], original["user"]["login"]) == (branch, head, "Zi-Yi-Ming")
+              market = api(f"git/commits/{original['merge_commit_sha']}")
+              assert {p["sha"] for p in market["parents"]} == {base, head}, (n, market["parents"])
+              combined_tree = market["tree"]["sha"]
+              if phase == "original":
+                  selected, desired = original, "success"
+              else:
+                  start = f"merge queue: checking #{n} "
+                  candidates = [p for p in api(f"pulls?state=open&base={quote(ref, safe='')}&per_page=100")
+                                if p["draft"] and p["user"]["id"] == 37929162 and p["title"].startswith(start)]
+                  assert len(candidates) == 1, (n, [p["number"] for p in candidates])
+                  selected = pull(candidates[0]["number"], ref, draft=True)
+                  assert selected["user"]["login"] == "mergify[bot]" and selected["user"]["id"] == 37929162
+                  assert selected["head"]["ref"].startswith("mergify/merge-queue/")
+                  assert selected["head"]["sha"] != head
+                  draft = api(f"git/commits/{selected['head']['sha']}")
+                  assert draft["tree"]["sha"] == combined_tree, (n, draft["tree"]["sha"], combined_tree)
+                  assert api(f"contents/lab-pr-qualification-draft-base.txt?ref={selected['head']['sha']}")["sha"] == canary["sha"]
+                  original_gate = latest(head)
+                  assert original_gate["state"] == "success" and original_gate["creator"]["id"] == 41898282
+                  desired = expected if phase == "complete" else "pending"
+                  if phase == "complete":
+                      last = latest(selected["head"]["sha"])
+                      assert (last["state"], last["target_url"], last["creator"]["id"]) == (
+                          "pending", f"https://github.com/{repo}/actions/runs/{witness}", 41898282
+                      ), (n, last.get("state"), last.get("target_url"))
+              rows.append((original, selected, desired, combined_tree, ref))
+
+          url = f"https://github.com/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          for original, selected, desired, combined_tree, ref in rows:
+              n = selected["number"]
+              sha = selected["head"]["sha"]
+              assert pull(n, ref, draft=phase != "original")["head"]["sha"] == sha
+              external_id = f"lab-qualification-draft:{n}:{sha}"
+              if phase != "complete":
+                  legacy = api("check-runs", {"name": "PR Gate", "head_sha": sha,
+                      "external_id": external_id, "status": "completed", "conclusion": "success",
+                      "details_url": url, "output": {"title": "Legacy Gate kept green for the control",
+                      "summary": "The qualification result for this exact SHA is published separately."}})
+              else:
+                  owned = [c for c in api(f"commits/{sha}/check-runs?check_name=PR%20Gate&filter=all&per_page=100")["check_runs"]
+                           if c["external_id"] == external_id and c["app"]["id"] == 15368 and c["conclusion"] == "success"]
+                  assert len(owned) == 1
+                  legacy = owned[0]
+              assert (legacy["app"]["id"], legacy["conclusion"], legacy["head_sha"]) == (15368, "success", sha)
+              result = api(f"statuses/{sha}", {"context": "PR Qualification", "state": desired,
+                  "description": {"pending": "Queue draft qualification pending", "success": "Queue draft lab qualification passed",
+                                  "failure": "Queue draft lab failure control"}[desired], "target_url": url})
+              assert (result["context"], result["state"], result["creator"]["id"]) == ("PR Qualification", desired, 41898282)
+              observed = latest(sha)
+              assert (observed["id"], observed["state"]) == (result["id"], desired)
+              row = {"phase": phase, "original": original["number"], "tested_pr": n, "head": sha, "base": base, "tree": combined_tree,
+                     "legacy": legacy["id"], "qualification": result["id"], "state": desired}
+              print(json.dumps(row), flush=True)
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                  f.write(f"- \x60{json.dumps(row)}\x60\n")
           PY
 
