@@ -39,6 +39,7 @@ jobs:
           import re
           import subprocess
           import tempfile
+          import time
           from urllib.parse import quote
 
           repo = "Zi-Yi-Ming/sr-pr-gate-lab"
@@ -131,23 +132,29 @@ jobs:
               sha = selected["head"]["sha"]
               assert pull(n, ref, draft=phase != "original")["head"]["sha"] == sha
               external_id = f"lab-qualification-draft:{n}:{sha}"
-              if phase != "complete":
+              owned = [c for c in api(f"commits/{sha}/check-runs?check_name=PR%20Gate&filter=all&per_page=100")["check_runs"]
+                       if c["external_id"] == external_id and c["app"]["id"] == 15368 and c["conclusion"] == "success"]
+              assert len(owned) <= 1
+              if owned:
+                  legacy = owned[0]
+              else:
+                  assert phase != "complete"
                   legacy = api("check-runs", {"name": "PR Gate", "head_sha": sha,
                       "external_id": external_id, "status": "completed", "conclusion": "success",
                       "details_url": url, "output": {"title": "Legacy Gate kept green for the control",
                       "summary": "The qualification result for this exact SHA is published separately."}})
-              else:
-                  owned = [c for c in api(f"commits/{sha}/check-runs?check_name=PR%20Gate&filter=all&per_page=100")["check_runs"]
-                           if c["external_id"] == external_id and c["app"]["id"] == 15368 and c["conclusion"] == "success"]
-                  assert len(owned) == 1
-                  legacy = owned[0]
               assert (legacy["app"]["id"], legacy["conclusion"], legacy["head_sha"]) == (15368, "success", sha)
               result = api(f"statuses/{sha}", {"context": "PR Qualification", "state": desired,
                   "description": {"pending": "Queue draft qualification pending", "success": "Queue draft lab qualification passed",
                                   "failure": "Queue draft lab failure control"}[desired], "target_url": url})
               assert (result["context"], result["state"], result["creator"]["id"]) == ("PR Qualification", desired, 41898282)
-              observed = latest(sha)
-              assert (observed["id"], observed["state"]) == (result["id"], desired)
+              for _ in range(6):
+                  observed = latest(sha)
+                  if (observed.get("id"), observed.get("state")) == (result["id"], desired):
+                      break
+                  time.sleep(2)
+              else:
+                  raise AssertionError(f"Status {result['id']} did not become visible for lab #{n}")
               row = {"phase": phase, "original": original["number"], "tested_pr": n, "head": sha, "base": base, "tree": combined_tree,
                      "legacy": legacy["id"], "qualification": result["id"], "state": desired}
               print(json.dumps(row), flush=True)
