@@ -25,3 +25,17 @@ Run local tests with:
 ```text
 python -m unittest discover -s tests -v
 ```
+
+## A/B multi-suite experiment
+
+The basic calibration passed on run [43895533473](https://github.com/Zi-Yi-Ming/sr-pr-gate-lab/actions/runs/43895533473): waiting and partial authorization returned explicit required-Gate HTTP405 refusals; the failed fixture returned a failing-Gate refusal; the full-success PR merged normally. Its raw artifacts remain the basic evidence.
+
+The A/B controller lives on `lab/ab-controller`. Default main retains the basic workflow. Each new A/B case has its own independently protected target branch with the same required check/App/admin contract and its own frozen head. No basic PR is changed.
+
+The fixed case order is A waiting/partial/failure/success, then B waiting/partial/failure/success. A seed run on the case head dispatches qualification and cancels itself. A separate run on the same head executes qualification and the native `CI Execution` aggregate. Its relay starts the driver on the immutable controller revision. One concurrency slot makes these finite stages sequential, without waiting loops or timers.
+
+The driver checks actual run/suite provenance before publishing. Negative cases deliberately include an explicitly synthetic stale-success fixture; it is not qualification evidence. The current Gate must still remain pending or failed, and actual ordinary merge calls must be refused. Positive cases must first reproduce the required-green/cancelled-suite/merge-refused topology; absence of that topology is `NOT_REPRODUCED`.
+
+Route A PATCHes only the exact current Gate. Route B POSTs one replacement and retains old checks. Publisher and recovery jobs can write checks but cannot merge; baseline and final probes can merge but cannot rewrite checks or administer the repository. Native and foreign checks are never neutralized.
+
+An unsafe negative merge, permission error or inconclusive result stops the finite batch. A well-defined terminal result can advance exactly one position. `NOT_REPRODUCED`, `NOT_RECOVERED` and inconsistent merge/readback evidence are never presented as a successful recovery. There are no repeated dispatch retries, polling, scheduled monitors or comments.
