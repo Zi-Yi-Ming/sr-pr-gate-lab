@@ -1,37 +1,37 @@
-name: Lab same-name requested CI fence
-run-name: Lab PR Gate fence / ${{ inputs.variant }}
+name: Lab dual publication
 on:
   workflow_dispatch:
     inputs:
-      pr: {type: string, required: true}
-      run: {type: string, required: true}
-      attempt: {type: string, required: true}
-      variant:
-        type: choice
+      pr:
         required: true
-        options: [legacy, v2]
+        type: string
+      run:
+        required: true
+        type: string
+      attempt:
+        required: true
+        type: string
+      variant:
+        required: true
+        type: string
 permissions:
-  contents: read
-  actions: write
-  pull-requests: read
+  actions: read
+  checks: write
   statuses: write
-concurrency:
-  group: lab-5661-same-name-probe
-  cancel-in-progress: false
+  pull-requests: read
+  contents: read
 jobs:
-  probe:
-    if: github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.ref == 'refs/heads/lab/5661-same-name-probe-20261122'
+  publish:
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
-      PR_INPUT: ${{ inputs.pr }}
-      RUN_INPUT: ${{ inputs.run }}
-      ATTEMPT_INPUT: ${{ inputs.attempt }}
-      VARIANT: ${{ inputs.variant }}
+      LAB_PR: ${{ inputs.pr }}
+      LAB_RUN: ${{ inputs.run }}
+      LAB_ATTEMPT: ${{ inputs.attempt }}
+      LAB_VARIANT: ${{ inputs.variant }}
     steps:
-      - name: Fence the next attempt before rerunning the same head
-        shell: bash
+      - name: Publish two contexts on isolated fixture heads
         run: |
           python3 - <<'PY'
           import json
@@ -39,70 +39,61 @@ jobs:
           import subprocess
 
           repo = "Zi-Yi-Ming/sr-pr-gate-lab"
-          ref = "refs/heads/lab/5661-same-name-probe-20261122"
-          head = "ef4cc2c49f190caacf1f49e37b07e70f30966ea8"
+          assert os.environ["GITHUB_REPOSITORY"].lower() == repo.lower()
+          assert os.environ["GITHUB_REF"] == "refs/heads/lab/pr-qualification-dual-20261122"
+          assert tuple(os.environ[k] for k in ("LAB_PR", "LAB_RUN", "LAB_ATTEMPT", "LAB_VARIANT")) == ("20", "44074619714", "1", "v2")
           base = "525bc8117c9176b158d206b324c904e18aab8534"
-          run_id = 44059023716
-          variant = os.environ["VARIANT"]
-          route = f"actions/runs/{run_id}"
-          pending = {
-              "context": "PR Gate",
-              "state": "pending",
-              "target_url": f"https://github.com/{repo}/actions/runs/{run_id}/attempts/3",
-              "description": "Waiting for authorized CI rerun",
+          fixtures = {
+              8: ("lab/ab-a-success", "lab-target/a-success", "12d72aa6b4c343c4ac20bce1bdc082522a4c2467", "pending"),
+              12: ("lab/ab-b-success", "lab-target/b-success", "f9e97f92629e2f735ee5bc888992a272e93927b7", "failure"),
+              20: ("lab/native-success", "lab-target/native-success", "71b04c917815fca2902f73d74d426916a2c23b1d", "success"),
           }
 
-          def require(value, message):
-              if not value:
-                  raise SystemExit(message)
+          def api(path, data=None):
+              cmd = ["gh", "api", f"repos/{repo}/{path}"]
+              if data is not None:
+                  cmd += ["--method", "POST", "--input", "-"]
+              result = subprocess.run(cmd, input=json.dumps(data) if data is not None else None,
+                                      text=True, capture_output=True, check=True)
+              return json.loads(result.stdout)
 
-          def api(path, method="GET", payload=None):
-              command = ["gh", "api", f"repos/{repo}/{path}", "--method", method]
-              if payload is not None:
-                  command += ["--input", "-"]
-              output = subprocess.run(
-                  command,
-                  input=json.dumps(payload).encode() if payload is not None else None,
-                  stdout=subprocess.PIPE,
-                  check=True,
-                  timeout=30,
-              ).stdout
-              return json.loads(output) if output.strip() else None
+          def validate_pull(number, head_ref, base_ref, sha):
+              pr = api(f"pulls/{number}")
+              assert pr["state"] == "open" and not pr["draft"] and not pr["merged"]
+              assert pr["user"]["login"] == "Zi-Yi-Ming"
+              assert (pr["head"]["ref"], pr["head"]["sha"]) == (head_ref, sha)
+              assert (pr["base"]["ref"], pr["base"]["sha"]) == (base_ref, base)
+              assert all(pr[key]["repo"]["full_name"].lower() == repo.lower() for key in ("head", "base"))
 
-          def same_revision():
-              pr = api("pulls/16")
-              run = api(route)
-              require(pr["state"] == "open" and pr["head"]["sha"] == head
-                      and pr["base"]["sha"] == base and pr["base"]["ref"] == "lab-target/b2-success",
-                      "lab PR revision changed")
-              require(run["head_sha"] == head and run["run_attempt"] == 2
-                      and run["path"] == ".github/workflows/calibration.yml"
-                      and run["status"] == "completed", "lab CI attempt changed")
+          for number, (head_ref, base_ref, sha, state) in fixtures.items():
+              validate_pull(number, head_ref, base_ref, sha)
+          run = api("actions/runs/44074619714")
+          check = api("check-runs/134009365725")
+          assert (run["head_sha"], run["run_attempt"], run["status"], run["conclusion"]) == (fixtures[20][2], 1, "completed", "success")
+          assert (check["head_sha"], check["check_suite"]["id"], check["app"]["id"], check["name"], check["conclusion"]) == (fixtures[20][2], run["check_suite_id"], 15368, "PR Gate", "success")
 
-          def latest_gate():
-              statuses = api(f"commits/{head}/statuses?per_page=100")
-              for item in statuses:
-                  if item["context"] == "PR Gate" and item["creator"]["id"] == 41898282:
-                      return item
-              raise SystemExit("Trusted lab Gate unavailable")
-
-          require(os.environ["GITHUB_REPOSITORY"] == repo and os.environ["GITHUB_REF"] == ref
-                  and (os.environ["PR_INPUT"], os.environ["RUN_INPUT"], os.environ["ATTEMPT_INPUT"])
-                  == ("16", "44059023716", "2") and variant in {"legacy", "v2"}, "wrong lab scope")
-
-          same_revision()
-          current = latest_gate()
-          if variant == "legacy":
-              require(current["id"] == 59556733391 and current["state"] == "success",
-                      "wrong starting control")
-              posted = api(f"statuses/{head}", "POST", pending)
-              current = latest_gate()
-              require(current["id"] == posted["id"], "write was not visible on readback")
-          require(all(current[key] == value for key, value in pending.items()), "pending missing")
-          same_revision()
-          print(json.dumps({"head": head, "previous_attempt": 2, "pending_status_id": current["id"],
-                            "created_at": current["created_at"], "variant": variant}), flush=True)
-          if variant == "v2":
-              api(f"{route}/rerun", "POST")
-              print(json.dumps({"accepted": True, "run": run_id, "next_attempt": 3}), flush=True)
+          for number, (head_ref, base_ref, sha, state) in fixtures.items():
+              validate_pull(number, head_ref, base_ref, sha)
+              source_url = f"https://github.com/{repo}/actions/runs/44074619714/attempts/1"
+              control_url = f"https://github.com/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+              legacy = api("check-runs", {
+                  "name": "PR Gate", "head_sha": sha, "external_id": f"lab-dual-qualification:{number}:{sha}",
+                  "status": "completed", "conclusion": "success",
+                  "details_url": source_url if number == 20 else control_url,
+                  "output": {"title": "Lab legacy Gate passed", "summary": "This isolated control keeps the old publisher green."},
+              })
+              current = api(f"statuses/{sha}", {
+                  "context": "PR Qualification", "state": state,
+                  "description": {"pending":"Waiting for lab qualification", "failure":"Lab qualification failed", "success":"Existing lab qualification passed"}[state],
+                  "target_url": source_url if number == 20 else control_url,
+              })
+              assert (legacy["name"], legacy["app"]["id"], legacy["conclusion"], legacy["head_sha"]) == ("PR Gate", 15368, "success", sha)
+              assert (current["context"], current["state"], current["creator"]["id"]) == ("PR Qualification", state, 41898282)
+              observed = api(f"commits/{sha}/status")
+              assert any(status["id"] == current["id"] and status["state"] == state for status in observed["statuses"])
+              summary = {"pr": number, "head": sha, "legacy_check": legacy["id"], "qualification_status": current["id"], "state": state}
+              print(json.dumps(summary), flush=True)
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+                  stream.write(f"- #{number}: {state}, legacy Check {legacy['id']}, Qualification status {current['id']}\n")
           PY
+
