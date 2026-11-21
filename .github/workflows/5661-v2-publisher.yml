@@ -45,16 +45,19 @@ jobs:
           repo = "Zi-Yi-Ming/sr-pr-gate-lab"
           assert os.environ["GITHUB_REPOSITORY"].lower() == repo.lower()
           assert os.environ["GITHUB_REF"] == "refs/heads/lab/pr-qualification-queue-draft-20261122"
-          assert os.environ["LAB_CASES"] == "both"
+          selector = os.environ["LAB_CASES"]
           base, phase, witness = (os.environ[name] for name in ("LAB_BASE", "LAB_PHASE", "LAB_PENDING_RUN"))
           assert re.fullmatch("[0-9a-f]{40}", base)
-          assert phase in {"original", "pending", "complete"}
+          assert (selector, phase) in {("both", "original"), ("both", "pending"), ("both", "complete"), ("failure", "retry-failure")}
           assert witness.isdecimal()
           old = "525bc8117c9176b158d206b324c904e18aab8534"
           cases = [
               (8, "lab/ab-a-success", "12d72aa6b4c343c4ac20bce1bdc082522a4c2467", "failure"),
               (12, "lab/ab-b-success", "f9e97f92629e2f735ee5bc888992a272e93927b7", "success"),
           ]
+
+          if selector == "failure":
+              cases = cases[:1]
 
           def api(path, data=None):
               command = ["gh", "api", f"repos/{repo}/{path}"]
@@ -75,6 +78,14 @@ jobs:
           def latest(sha):
               return next((item for item in api(f"commits/{sha}/statuses?per_page=100")
                            if item["context"] == "PR Qualification"), {})
+
+          if phase == "retry-failure":
+              previous = api("pulls/57")
+              assert previous["state"] == "closed" and previous["draft"] and not previous["merged"]
+              assert previous["user"]["id"] == 37929162
+              assert previous["head"]["sha"] == "ac969c62614a8254c71e6ec9cfe486c273ce02aa"
+              prior_gate = latest(previous["head"]["sha"])
+              assert (prior_gate["id"], prior_gate["state"], prior_gate["creator"]["id"]) == (59558272499, "failure", 41898282)
 
           common = api(f"git/commits/{base}")
           assert [p["sha"] for p in common["parents"]] == [old]
@@ -118,7 +129,9 @@ jobs:
                   assert api(f"contents/lab-pr-qualification-draft-base.txt?ref={selected['head']['sha']}")["sha"] == canary["sha"]
                   original_gate = latest(head)
                   assert original_gate["state"] == "success" and original_gate["creator"]["id"] == 41898282
-                  desired = expected if phase == "complete" else "pending"
+                  desired = expected if phase in {"complete", "retry-failure"} else "pending"
+                  if phase == "retry-failure":
+                      assert (selected["number"], selected["head"]["sha"]) == (59, "d54c9134e1ef1378b7280f21cafadf3e38248e62")
                   if phase == "complete":
                       last = latest(selected["head"]["sha"])
                       assert (last["state"], last["target_url"], last["creator"]["id"]) == (
