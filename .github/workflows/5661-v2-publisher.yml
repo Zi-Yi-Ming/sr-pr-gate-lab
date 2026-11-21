@@ -38,6 +38,7 @@ jobs:
           import os
           import re
           import subprocess
+          import tempfile
           from urllib.parse import quote
 
           repo = "Zi-Yi-Ming/sr-pr-gate-lab"
@@ -78,14 +79,28 @@ jobs:
           assert [p["sha"] for p in common["parents"]] == [old]
           assert common["message"] == "Lab: advance base for the PR Qualification queue-draft controls"
           canary = api(f"contents/lab-pr-qualification-draft-base.txt?ref={base}")
+          def git(directory, *args):
+              p = subprocess.run(["git", "-C", directory, *args], check=True,
+                                 capture_output=True, text=True, timeout=40)
+              return p.stdout.strip()
+
+          # GitHub may cache the pre-retarget refs/pull/N/merge commit. Compute
+          # the expected merge tree from the two verified commits independently.
+          with tempfile.TemporaryDirectory() as directory:
+              git(directory, "init", "--quiet")
+              git(directory, "fetch", "--quiet", "--no-tags", "--depth=16",
+                  f"https://github.com/{repo}.git", base, *(case[2] for case in cases))
+              trees = {}
+              for _, _, head, _ in cases:
+                  assert git(directory, "merge-base", base, head) == old
+                  trees[head] = git(directory, "merge-tree", "--write-tree", base, head)
+
           rows = []
           for n, branch, head, expected in cases:
               ref = f"lab-target/pr-qualification-draft-{expected}"
               original = pull(n, ref)
               assert (original["head"]["ref"], original["head"]["sha"], original["user"]["login"]) == (branch, head, "Zi-Yi-Ming")
-              market = api(f"git/commits/{original['merge_commit_sha']}")
-              assert {p["sha"] for p in market["parents"]} == {base, head}, (n, market["parents"])
-              combined_tree = market["tree"]["sha"]
+              combined_tree = trees[head]
               if phase == "original":
                   selected, desired = original, "success"
               else:
