@@ -1,60 +1,105 @@
-name: Basic Gate calibration
-
+name: A/B Gate experiment
 on:
   workflow_dispatch:
     inputs:
       phase:
-        description: Publish the basic checks, or probe an existing publication without republishing.
+        description: Preserved default-branch dispatch schema.
         required: true
         type: choice
         options:
-          - publish-and-probe
-          - probe-only
+        - publish-and-probe
+        - probe-only
         default: publish-and-probe
       manifest:
-        description: Frozen waiting, partial, failure and success PR identities as JSON.
+        description: Frozen bounded A/B envelope.
         required: false
         type: string
         default: ''
       source_run_id:
-        description: Earlier calibration run containing basic-publication, for probe-only.
+        description: Preserved input; A/B uses its verified envelope.
         required: false
         type: string
         default: ''
-
 permissions:
   contents: read
-
 concurrency:
-  group: sr-pr-gate-lab-calibration
+  group: sr-pr-gate-lab-ab
   cancel-in-progress: false
-
+env:
+  LAB_AB_MANIFEST: ${{ inputs.manifest }}
 jobs:
-  qualify:
-    if: github.ref == 'refs/heads/main' && inputs.phase == 'publish-and-probe'
+  seed:
+    if: fromJSON(inputs.manifest).stage == 'seed'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Run seed with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py seed --output out/seed.json
+  native_qualification:
+    name: Native qualification
+    if: fromJSON(inputs.manifest).stage == 'qualification'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Evaluate the fixed qualification fixtures
-        env:
-          LAB_MANIFEST: ${{ inputs.manifest }}
-        run: python3 lab.py qualify --output out/qualification.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: basic-qualification
-          path: out/qualification.json
-          retention-days: 14
-          if-no-files-found: error
-
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Run qualify with exact lab identities
+      run: python3 ab_lab.py qualify --output out/qualification.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-qualification
+        path: out/qualification.json
+        retention-days: 14
+        if-no-files-found: error
+  execution:
+    name: CI Execution
+    needs: native_qualification
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+    - name: Preserve the actual native qualification result
+      env:
+        RESULT: ${{ needs.native_qualification.result }}
+      run: test "$RESULT" = success
+  relay:
+    needs:
+    - native_qualification
+    - execution
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Run relay with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py relay --output out/relay.json
   publish:
-    needs: qualify
+    if: fromJSON(inputs.manifest).stage == 'driver'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -63,31 +108,32 @@ jobs:
       pull-requests: read
       checks: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: basic-qualification
-          path: out/input
-      - name: Publish the exact fixture results
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 lab.py publish --input out/input/qualification.json --output out/publication.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: basic-publication
-          path: out/publication.json
-          retention-days: 14
-          if-no-files-found: error
-
-  probe:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-qualification
+        path: out/input
+        github-token: ${{ github.token }}
+        run-id: ${{ fromJSON(inputs.manifest).qualification_run_id }}
+    - name: Run publish with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py publish --input out/input/qualification.json --output out/publication.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-publication
+        path: out/publication.json
+        retention-days: 14
+        if-no-files-found: error
+  baseline:
     needs: publish
-    if: >-
-      always() && github.ref == 'refs/heads/main'
-      && (needs.publish.result == 'success' || inputs.phase == 'probe-only')
+    outputs:
+      eligible: ${{ steps.proof.outputs.eligible }}
+      advance: ${{ steps.proof.outputs.advance }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -96,24 +142,226 @@ jobs:
       pull-requests: read
       checks: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: basic-publication
-          path: out/input
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.phase == 'probe-only' && inputs.source_run_id || github.run_id }}
-      - name: Attempt ordinary merges, negative controls first
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 lab.py probe --input out/input/publication.json --output out/probe.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: basic-probe
-          path: out/probe.json
-          retention-days: 14
-          if-no-files-found: error
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/input
+    - name: Run baseline with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py baseline --input out/input/publication.json --output out/baseline.json
+      id: proof
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-baseline
+        path: out/baseline.json
+        retention-days: 14
+        if-no-files-found: error
+  recover:
+    needs: baseline
+    if: needs.baseline.outputs.eligible == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-baseline
+        path: out/input
+    - name: Run recover with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py recover --input out/input/baseline.json --output out/recovery.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-recovery
+        path: out/recovery.json
+        retention-days: 14
+        if-no-files-found: error
+  probe:
+    needs: recover
+    outputs:
+      advance: ${{ steps.proof.outputs.advance }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-recovery
+        path: out/input
+    - name: Run probe with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ab_lab.py probe --input out/input/recovery.json --output out/probe.json
+      id: proof
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-probe
+        path: out/probe.json
+        retention-days: 14
+        if-no-files-found: error
+  advance:
+    needs:
+    - baseline
+    - probe
+    if: always() && !cancelled() && fromJSON(inputs.manifest).stage == 'driver' && ((needs.baseline.result == 'success'
+      && needs.baseline.outputs.advance == 'true') || (needs.probe.result == 'success' && needs.probe.outputs.advance
+      == 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ${{ needs.probe.outputs.advance == 'true' && 'ab-probe' || 'ab-baseline' }}
+        path: out/input
+    - name: Run advance with exact lab identities
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_JSON: ${{ needs.probe.outputs.advance == 'true' && 'out/input/probe.json' || 'out/input/baseline.json'
+          }}
+      run: python3 ab_lab.py advance --input "$INPUT_JSON" --output out/advance.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: ab-advance
+        path: out/advance.json
+        retention-days: 14
+        if-no-files-found: error
+  supplement_baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/source
+        github-token: ${{ github.token }}
+        run-id: '44048669391'
+    - id: proof
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 supplement_a.py baseline --source out/source/publication.json --output out/supplement-baseline.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: supplement-baseline
+        path: out/supplement-baseline.json
+        retention-days: 14
+        if-no-files-found: error
+    if: fromJSON(inputs.manifest).stage == 'supplement' && inputs.phase == 'probe-only' && inputs.source_run_id
+      == '44048669391'
+    outputs:
+      eligible: ${{ steps.proof.outputs.eligible }}
+  supplement_recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/source
+        github-token: ${{ github.token }}
+        run-id: '44048669391'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: supplement-baseline
+        path: out/input
+    - id: proof
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 supplement_a.py recover --source out/source/publication.json --input out/input/supplement-baseline.json
+        --output out/supplement-recover.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: supplement-recover
+        path: out/supplement-recover.json
+        retention-days: 14
+        if-no-files-found: error
+    needs: supplement_baseline
+    if: needs.supplement_baseline.outputs.eligible == 'true'
+  supplement_probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      checks: read
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ab-publication
+        path: out/source
+        github-token: ${{ github.token }}
+        run-id: '44048669391'
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: supplement-recover
+        path: out/input
+    - id: proof
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 supplement_a.py probe --source out/source/publication.json --input out/input/supplement-recover.json
+        --output out/supplement-probe.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: supplement-probe
+        path: out/supplement-probe.json
+        retention-days: 14
+        if-no-files-found: error
+    needs: supplement_recover
