@@ -70,6 +70,22 @@ queue_rules:
     batch_size: 1
     max_checks_retries: 0
 
+  - name: lab-pr-qualification-draft
+    queue_conditions:
+      - base ~= ^lab-target/pr-qualification-draft-(failure|success)$
+      - label = lab-pr-qualification-draft
+      - 'check-success = @github-actions/PR Qualification'
+    merge_conditions:
+      - base ~= ^lab-target/pr-qualification-draft-(failure|success)$
+      - 'check-success = @github-actions/PR Qualification'
+    merge_method: squash
+    update_method: merge
+    batch_size: 1
+    max_checks_retries: 1
+    batch_max_failure_resolution_attempts: 0
+    checks_timeout: 15 minutes
+
+
 pull_request_rules:
   - name: Queue only the native Gate lab fixture
     conditions:
@@ -138,3 +154,15 @@ pull_request_rules:
     actions:
       queue:
         name: lab-pr-qualification-dual
+
+  - name: Queue only the dedicated PR Qualification draft controls
+    conditions:
+      - base ~= ^lab-target/pr-qualification-draft-(failure|success)$
+      - head ~= ^lab/ab-(a|b)-success$
+      - author = Zi-Yi-Ming
+      - label = lab-pr-qualification-draft
+      - -draft
+      - -closed
+    actions:
+      queue:
+        name: lab-pr-qualification-draft
