@@ -85,6 +85,23 @@ queue_rules:
     batch_max_failure_resolution_attempts: 0
     checks_timeout: 15 minutes
 
+  - name: lab-5661-dual-queue-n24
+    queue_conditions:
+      - base ~= ^lab-target/5661-dual-queue-n24-(success|failure)$
+      - label = lab-5661-dual-queue-n24
+      - 'check-success = @github-actions/PR Qualification'
+      - 'check-success = @github-actions/CI Execution'
+    merge_conditions:
+      - base ~= ^lab-target/5661-dual-queue-n24-(success|failure)$
+      - 'check-success = @github-actions/PR Qualification'
+      - 'check-success = @github-actions/CI Execution'
+    merge_method: squash
+    update_method: merge
+    batch_size: 1
+    max_checks_retries: 0
+    batch_max_failure_resolution_attempts: 0
+    checks_timeout: 15 minutes
+
 
 pull_request_rules:
   - name: Queue only the native Gate lab fixture
@@ -166,3 +183,15 @@ pull_request_rules:
     actions:
       queue:
         name: lab-pr-qualification-draft
+
+  - name: Queue only the dual native qualification controls
+    conditions:
+      - base ~= ^lab-target/5661-dual-queue-n24-(success|failure)$
+      - head ~= ^lab/5661-dual-queue-n24-(success|failure)$
+      - author = Zi-Yi-Ming
+      - label = lab-5661-dual-queue-n24
+      - -draft
+      - -closed
+    actions:
+      queue:
+        name: lab-5661-dual-queue-n24
