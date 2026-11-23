@@ -1,0 +1,41 @@
+name: Publish the isolated 5661 suite controls
+on:
+  push:
+    branches: [lab/5661-suite-publisher-n23]
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+jobs:
+  publish:
+    if: ${{ github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.run_attempt == 1 }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish synthetic gates for the two pinned lab heads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_A: '60'
+          SHA_A: 'e8b3df4f715f75338865dd846cd36b79b9cf08ec'
+          SUITE_A: '122325499957'
+          PR_B: '61'
+          SHA_B: 'df1216cd5f98a1b9bd0c087df819d0ee4f9fd7df'
+          SUITE_B: '122325529421'
+        run: |
+          set -euo pipefail
+          for arm in A B; do
+            pr_var=PR_$arm
+            sha_var=SHA_$arm
+            suite_var=SUITE_$arm
+            pr=${!pr_var}
+            sha=${!sha_var}
+            suite=${!suite_var}
+            test "$(gh api "repos/Zi-Yi-Ming/sr-pr-gate-lab/pulls/$pr" --jq '.head.sha')" = "$sha"
+            test "$(gh api "repos/Zi-Yi-Ming/sr-pr-gate-lab/pulls/$pr" --jq '.base.ref')" = 'lab-target/5661-suite-cause-n23'
+            test "$(gh api "repos/Zi-Yi-Ming/sr-pr-gate-lab/check-suites/$suite" --jq .head_sha)" = "$sha"
+            test "$(gh api "repos/Zi-Yi-Ming/sr-pr-gate-lab/commits/$sha/check-runs?check_name=PR%20Gate&filter=all" --jq .total_count)" = 0
+            gh api --method POST "repos/Zi-Yi-Ming/sr-pr-gate-lab/check-runs" -f name='PR Gate' \
+              -f head_sha="$sha" -f status=completed -f conclusion=success \
+              -f "output[title]=Synthetic 5661 fixture passed" \
+              -f "output[summary]=Isolated experiment on this exact lab PR head." \
+              --jq '{id,head_sha,conclusion,app:.app.id,suite:.check_suite.id,html_url}'
+          done
