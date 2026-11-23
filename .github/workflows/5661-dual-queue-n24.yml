@@ -1,0 +1,54 @@
+name: Lab queue checks for the qualification pair
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [lab-target/5661-dual-queue-n24-success, lab-target/5661-dual-queue-n24-failure]
+permissions:
+  contents: read
+jobs:
+  qualification:
+    name: Publish controlled qualification fixture status
+    if: >-
+      github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      ((!github.event.pull_request.draft &&
+        github.event.pull_request.user.login == 'Zi-Yi-Ming' &&
+        startsWith(github.head_ref, 'lab/5661-dual-queue-n24-')) ||
+       (github.event.pull_request.draft &&
+        github.event.pull_request.user.id == 37929162 &&
+        github.event.pull_request.user.login == 'mergify[bot]' &&
+        github.event.pull_request.user.type == 'Bot' &&
+        startsWith(github.head_ref, 'mergify/merge-queue/')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Publish isolated qualification positive or old-green control
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$GITHUB_REPOSITORY" = 'Zi-Yi-Ming/sr-pr-gate-lab'
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+            -f context='PR Qualification' -f state=success \
+            -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            -f 'description=Synthetic status for isolated queue control' \
+            --jq '{id,state,target_url,context}'
+  execution:
+    name: CI Execution
+    if: ${{ !cancelled() }}
+    needs: qualification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the qualification and exercise the failure fixture
+        env:
+          QUALIFICATION_RESULT: ${{ needs.qualification.result }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          test "$QUALIFICATION_RESULT" = success
+          if [ "$GITHUB_BASE_REF" = 'lab-target/5661-dual-queue-n24-failure' ] && [ "$IS_DRAFT" = true ]; then
+            echo 'Intentional native-check failure while the status remains green'
+            exit 1
+          fi
+          echo 'Synthetic execution passed'
