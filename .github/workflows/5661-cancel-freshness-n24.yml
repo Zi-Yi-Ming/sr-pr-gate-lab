@@ -1,0 +1,55 @@
+name: Lab native check freshness
+on:
+  pull_request:
+    types: [opened]
+    branches: [lab-target/5661-cancel-freshness-n24]
+permissions:
+  contents: read
+jobs:
+  qualify:
+    name: Qualification Job
+    runs-on: ubuntu-latest
+    steps:
+      - name: Controlled qualification result
+        run: |
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
+            sleep 125
+            echo 'Expected failure in the rerun fixture'
+            exit 1
+          fi
+          echo 'Initial qualification passed'
+  execution:
+    name: CI Execution
+    if: ${{ !cancelled() && github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: qualify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Require passing qualification
+        env:
+          QUALIFICATION_RESULT: ${{ needs.qualify.result }}
+        run: test "$QUALIFICATION_RESULT" = success
+      - name: Publish the status from the qualified first attempt
+        if: ${{ github.run_attempt == 1 }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$GITHUB_REPOSITORY" = 'Zi-Yi-Ming/sr-pr-gate-lab'
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+            -f context='PR Qualification' -f state=success \
+            -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/1" \
+            -f 'description=Synthetic qualification passed in the first attempt' \
+            --jq '{id,state,target_url,context}'
+  execution-always:
+    name: CI Execution Always
+    if: ${{ always() }}
+    needs: qualify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require passing qualification
+        env:
+          QUALIFICATION_RESULT: ${{ needs.qualify.result }}
+        run: test "$QUALIFICATION_RESULT" = success
