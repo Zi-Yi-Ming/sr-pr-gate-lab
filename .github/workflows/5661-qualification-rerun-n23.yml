@@ -1,0 +1,19 @@
+name: Lab PR Qualification rerun fixture
+on:
+  pull_request:
+    types: [opened]
+    branches: [lab-target/5661-qualification-rerun-n23]
+permissions:
+  contents: read
+jobs:
+  qualification-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Synthetic qualification result
+        run: |
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
+            sleep 90
+            echo 'Intentional failure in the rerun fixture'
+            exit 1
+          fi
+          echo 'Initial fixture qualified'
