@@ -1,0 +1,32 @@
+name: Publish exact PR Qualification fixture status
+on:
+  push:
+    branches: [lab/5661-qualification-publisher-n23-failure]
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  statuses: write
+jobs:
+  publish:
+    if: ${{ github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.run_attempt == 1 }}
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export REPO='Zi-Yi-Ming/sr-pr-gate-lab'
+          for input in 62:7776fd1afa64d351ead3e3f84b2a8f23c43def6b:45208675010 63:ca4a9ccd6c7b2f9ae1c890888a4cb619c0e80ca3:45208692598; do
+            IFS=: read -r pr sha run <<< "$input"
+            test "$(gh api "repos/$REPO/pulls/$pr" --jq '.head.sha')" = "$sha"
+            test "$(gh api "repos/$REPO/pulls/$pr" --jq '.base.ref')" = 'lab-target/5661-qualification-rerun-n23'
+            run_info=$(gh api "repos/$REPO/actions/runs/$run")
+            echo "$run_info" | jq -e --arg sha "$sha" \
+              '.head_sha == $sha and .event == "pull_request" and (.path | split("@")[0]) == ".github/workflows/5661-qualification-rerun-n23.yml" and .run_attempt == 2 and .status == "completed" and .conclusion == "failure"' >/dev/null
+            gh api --method POST "repos/$REPO/statuses/$sha" \
+              -f context='PR Qualification' -f state='failure' \
+              -f "target_url=https://github.com/$REPO/actions/runs/$run/attempts/2" \
+              -f 'description=Synthetic qualification lifecycle fixture' \
+              --jq '{id,state,target_url,context}'
+          done
