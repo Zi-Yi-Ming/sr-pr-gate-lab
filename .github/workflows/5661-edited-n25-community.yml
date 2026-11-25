@@ -1,0 +1,12 @@
+name: Community edited n25
+on:
+  pull_request:
+    types: [opened, edited]
+    branches: ['lab-target/5661-edited-n25-*']
+permissions: {}
+jobs:
+  metadata:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'This job represents skipped Community metadata checks.'
