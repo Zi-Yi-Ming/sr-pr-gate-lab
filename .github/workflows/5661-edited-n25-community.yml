@@ -3,10 +3,26 @@ on:
   pull_request:
     types: [opened]
     branches: ['lab-target/5661-edited-n25-*']
+  pull_request_target:
+    types: [edited]
+    branches: ['lab-target/5661-edited-n25-target-event']
 permissions: {}
 jobs:
   metadata:
-    if: ${{ false }}
+    if: ${{ github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.event_name == 'pull_request_target' && github.event.changes.body != null }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo 'This job represents skipped Community metadata checks.'
+      - name: Read the edited lab PR from the trusted event context
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          pr = event['pull_request']
+          assert event['action'] == 'edited' and 'body' in event['changes']
+          assert pr['number'] == 72 and 'Target event fixture body' in pr['body']
+          assert pr['base']['repo']['full_name'] == 'Zi-Yi-Ming/sr-pr-gate-lab'
+          print(json.dumps({'number': pr['number'], 'head': pr['head']['sha'], 'base': pr['base']['sha'], 'runtime_sha': os.environ['GITHUB_SHA']}))
+          PY
