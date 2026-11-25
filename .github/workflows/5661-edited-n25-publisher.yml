@@ -1,0 +1,31 @@
+name: Publish paired synthetic edited-trigger Gates
+on:
+  push:
+    branches: ['lab/5661-edited-n25-publisher']
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+jobs:
+  publish:
+    if: github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.actor == 'Zi-Yi-Ming' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Publish to the two pinned lab heads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/Zi-Yi-Ming/sr-pr-gate-lab/pulls/71 --jq '.head.sha')" = '905540346432354af32d40ebb621f35b7bea238a'
+          test "$(gh api repos/Zi-Yi-Ming/sr-pr-gate-lab/pulls/71 --jq '.base.ref')" = 'lab-target/5661-edited-n25-control'
+          test "$(gh api repos/Zi-Yi-Ming/sr-pr-gate-lab/pulls/71 --jq '.base.sha')" = '7ebf7995cf996d7f2602a313c788547b0eef8927'
+          test "$(gh api repos/Zi-Yi-Ming/sr-pr-gate-lab/check-suites/123387401584 --jq '.head_sha')" = '905540346432354af32d40ebb621f35b7bea238a'
+          test "$(gh api 'repos/Zi-Yi-Ming/sr-pr-gate-lab/commits/905540346432354af32d40ebb621f35b7bea238a/check-runs?filter=all&check_name=PR%20Gate' --jq '.total_count')" = 0
+          gh api --method POST repos/Zi-Yi-Ming/sr-pr-gate-lab/check-runs -f name='PR Gate' -f head_sha='905540346432354af32d40ebb621f35b7bea238a' -f status=completed -f conclusion=success -f 'output[title]=Synthetic lab Gate passed' -f 'output[summary]=Fixture only. Independent lab merge hold remains active.' --jq '{id,head_sha,conclusion,app:.app.id,suite:.check_suite.id}'
+          test "$(gh api repos/Zi-Yi-Ming/sr-pr-gate-lab/pulls/72 --jq '.head.sha')" = '89e2c36ba26edb6c1d30c06e396383785ceaa07c'
+          test "$(gh api repos/Zi-Yi-Ming/sr-pr-gate-lab/pulls/72 --jq '.base.ref')" = 'lab-target/5661-edited-n25-candidate'
+          test "$(gh api repos/Zi-Yi-Ming/sr-pr-gate-lab/pulls/72 --jq '.base.sha')" = '2bddf379e5bb482290867e510c9e4cb0f98340bd'
+          test "$(gh api repos/Zi-Yi-Ming/sr-pr-gate-lab/check-suites/123387430444 --jq '.head_sha')" = '89e2c36ba26edb6c1d30c06e396383785ceaa07c'
+          test "$(gh api 'repos/Zi-Yi-Ming/sr-pr-gate-lab/commits/89e2c36ba26edb6c1d30c06e396383785ceaa07c/check-runs?filter=all&check_name=PR%20Gate' --jq '.total_count')" = 0
+          gh api --method POST repos/Zi-Yi-Ming/sr-pr-gate-lab/check-runs -f name='PR Gate' -f head_sha='89e2c36ba26edb6c1d30c06e396383785ceaa07c' -f status=completed -f conclusion=success -f 'output[title]=Synthetic lab Gate passed' -f 'output[summary]=Fixture only. Independent lab merge hold remains active.' --jq '{id,head_sha,conclusion,app:.app.id,suite:.check_suite.id}'
