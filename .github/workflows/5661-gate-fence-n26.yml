@@ -1,0 +1,33 @@
+name: Fence only the exact isolated Gate rerun
+on:
+  push:
+    branches: [lab/5661-gate-approval-n26/fence]
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  statuses: write
+jobs:
+  publish:
+    if: ${{ github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab' && github.run_attempt == 1 }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PYTHONPATH=tools/ci python3 - <<'PY'
+          from manual_ci import GitHubClient, pending_rerun_status, write_qualification_status
+          repo = "Zi-Yi-Ming/sr-pr-gate-lab"
+          client = GitHubClient()
+          pr = client.request(f"repos/{repo}/pulls/74")
+          run = client.request(f"repos/{repo}/actions/runs/45755765070")
+          head = "6f589f5acc71d9dbc0b30e0592833f91986b37ca"
+          assert pr["state"] == "open" and pr["head"]["sha"] == head
+          assert pr["base"]["ref"] == "lab-target/5661-gate-approval-n26"
+          assert run["head_sha"] == head and run["event"] == "pull_request"
+          assert run["run_attempt"] == 2 and run["status"] == "completed"
+          write_qualification_status(client, repo, head, pending_rerun_status(repo, run["id"], 2))
+          PY
