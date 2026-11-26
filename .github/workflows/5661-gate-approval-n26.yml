@@ -1,0 +1,112 @@
+name: 5661 gate approval validation
+'on':
+  pull_request:
+    types:
+    - opened
+    branches:
+    - lab-target/5661-gate-approval-n26
+permissions:
+  contents: read
+jobs:
+  ci:
+    name: CI / Automatic checks
+    runs-on: ubuntu-latest
+    outputs:
+      publisher_ready: ${{ steps.proof.outputs.publisher_ready }}
+      strict_ci_execution: ${{ steps.proof.outputs.strict_ci_execution }}
+      reconciled_revision: ${{ steps.proof.outputs.reconciled_revision }}
+      plan: ${{ steps.proof.outputs.plan }}
+    steps:
+    - id: proof
+      env:
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: "set -euo pipefail\ntest \"$GITHUB_REPOSITORY\" = 'Zi-Yi-Ming/sr-pr-gate-lab'\n\
+        test \"$GITHUB_BASE_REF\" = 'lab-target/5661-gate-approval-n26'\necho 'publisher_ready=true'\
+        \ >> \"$GITHUB_OUTPUT\"\necho 'strict_ci_execution=true' >> \"$GITHUB_OUTPUT\"\
+        \necho 'plan={\"draft\":false}' >> \"$GITHUB_OUTPUT\"\ncase \"$GITHUB_HEAD_REF\"\
+        \ in\n  */failure) echo 'Fixture test assertion failed'; exit 1 ;;\n  */waiting)\
+        \ echo 'Automatic checks passed. Expensive checks await /ci run.' ;;\n  */rerun)\
+        \ echo 'All fixture checks passed' ;;\n  *) exit 1 ;;\nesac\nif [[ \"$GITHUB_RUN_ATTEMPT\"\
+        \ == 2 ]]; then\n  sleep 25\nfi\necho \"reconciled_revision=$HEAD_SHA:$GITHUB_SHA:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT\"\
+        \ >> \"$GITHUB_OUTPUT\""
+  pr-gate:
+    name: ${{ needs.ci.outputs.publisher_ready == 'true' && 'CI Execution' || 'PR
+      Gate' }}
+    if: ${{ !cancelled() }}
+    needs: ci
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      statuses: read
+    steps:
+    - name: Require successful reconciliation of executed contracts
+      env:
+        RESULT: ${{ needs.ci.result }}
+        PUBLISHER_READY: ${{ needs.ci.outputs.publisher_ready }}
+        STRICT_CI_EXECUTION: ${{ needs.ci.outputs.strict_ci_execution }}
+        DRAFT_PLAN: ${{ toJSON(fromJSON(needs.ci.outputs.plan || '{}').draft) }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        RECONCILED_REVISION: ${{ needs.ci.outputs.reconciled_revision }}
+      run: "if [[ \"$STRICT_CI_EXECUTION\" == true ]]; then\n  if [[ \"$RECONCILED_REVISION\"\
+        \ != \"$PR_HEAD_SHA:$GITHUB_SHA:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT\" ]]; then\n\
+        \    echo \"This revision and attempt have not completed CI reconciliation.\
+        \ See CI / Gate.\"\n    exit 1\n  fi\nelif [[ \"$PUBLISHER_READY\" != true\
+        \ && \"$DRAFT_PLAN\" != false ]]; then\n  echo \"Draft CI does not qualify\
+        \ this revision for merge.\"\n  exit 1\nfi\ntest \"$RESULT\" = success\n"
+    - uses: actions/checkout@v4
+      if: needs.ci.outputs.strict_ci_execution == 'true'
+      with:
+        persist-credentials: false
+        sparse-checkout-cone-mode: false
+        sparse-checkout: 'tools/ci/manual_ci.py
+
+          tools/ci/manual_ci_feedback.py
+
+          '
+    - name: Verify qualification belongs to this attempt
+      if: needs.ci.outputs.strict_ci_execution == 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: "PYTHONPATH=tools/ci python3 - <<'PY'\nfrom os import environ\n\nfrom manual_ci\
+        \ import GitHubClient, qualification_attempt_ready\n\nif not qualification_attempt_ready(\n\
+        \    GitHubClient(),\n    environ[\"GITHUB_REPOSITORY\"],\n    environ[\"\
+        PR_HEAD_SHA\"],\n    int(environ[\"GITHUB_RUN_ID\"]),\n    int(environ[\"\
+        GITHUB_RUN_ATTEMPT\"]),\n):\n    raise SystemExit(\"PR Qualification has not\
+        \ started for this CI attempt.\")\nPY\n"
+  publisher:
+    name: Publish trusted lab qualification
+    needs:
+    - ci
+    - pr-gate
+    if: ${{ !cancelled() && github.run_attempt == 1 && github.repository == 'Zi-Yi-Ming/sr-pr-gate-lab'
+      && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login
+      == 'Zi-Yi-Ming' && startsWith(github.head_ref, 'lab/5661-gate-approval-n26/')
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Publish only the required qualification
+      env:
+        GH_TOKEN: ${{ github.token }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        EXECUTION_RESULT: ${{ needs.pr-gate.result }}
+      run: "PYTHONPATH=tools/ci python3 - <<'PY'\nfrom os import environ\n\nfrom manual_ci\
+        \ import (\n    GitHubClient,\n    PR_QUALIFICATION_CONTEXT,\n    qualification_status_url,\n\
+        \    write_qualification_status,\n)\nfrom pr_ci_shared import qualification_only_rules\n\
+        \nrepo = environ[\"GITHUB_REPOSITORY\"]\nclient = GitHubClient()\nassert qualification_only_rules(client,\
+        \ repo, environ[\"GITHUB_BASE_REF\"])\ncase = environ[\"GITHUB_HEAD_REF\"\
+        ].rsplit(\"/\", 1)[1]\npassed = environ[\"EXECUTION_RESULT\"] == \"success\"\
+        \nassert passed == (case != \"failure\")\nstate, description = {\n    \"waiting\"\
+        : (\"pending\", \"Waiting for committer approval \u2014 /ci run\"),\n    \"\
+        rerun\": (\"success\", \"Fixture qualification passed\"),\n    \"failure\"\
+        : (\"failure\", \"Fixture test failed\"),\n}[case]\nwrite_qualification_status(client,\
+        \ repo, environ[\"HEAD_SHA\"], {\n    \"context\": PR_QUALIFICATION_CONTEXT,\n\
+        \    \"state\": state,\n    \"description\": description,\n    \"target_url\"\
+        : qualification_status_url(\n        repo, int(environ[\"GITHUB_RUN_ID\"]),\
+        \ int(environ[\"GITHUB_RUN_ATTEMPT\"])\n    ),\n})\nPY"
